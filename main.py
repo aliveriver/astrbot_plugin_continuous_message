@@ -41,8 +41,8 @@ class ContinuousMessagePlugin(Star):
         self.enable_plugin = self.config.get('enable', True)
         self.merge_separator = self.config.get('merge_separator', '\n')
         
-        # 也输出到 logger
-        logger.info(f"[消息防抖动] 插件已加载（仅私聊） - 启用: {self.enable_plugin}, 防抖: {self.debounce_time}秒")
+        # 输出到 logger
+        logger.info(f"[消息防抖动] 插件已加载 - 启用: {self.enable_plugin}, 防抖: {self.debounce_time}秒")
     
     def is_command(self, message: str) -> bool:
         """
@@ -63,7 +63,7 @@ class ContinuousMessagePlugin(Star):
                 return True
         return False
     
-    @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE, priority=1)
+    @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE, priority=50)
     async def handle_private_msg(self, event: AstrMessageEvent):
         """
         私聊消息防抖逻辑（仅私聊可用，避免群聊越权问题）
@@ -74,45 +74,30 @@ class ContinuousMessagePlugin(Star):
           - 期间若出现指令，则结束本轮聚合
           - 超时后，把本轮聚合的文本一次性交给 LLM
         """
-        logger.info(f"[消息防抖动] 收到私聊消息: {event.message_str}")
-        
         # 如果插件未启用，直接返回
         if not self.enable_plugin:
-            logger.info(f"[消息防抖动] 插件未启用，跳过")
             return
         
         message_str = (event.message_str or "").strip()
         
         # 如果消息为空或是指令，直接放行
-        if not message_str:
-            return
-        
-        if self.is_command(message_str):
-            logger.info(f"[消息防抖动] 是指令，跳过: {message_str}")
+        if not message_str or self.is_command(message_str):
             return
         
         logger.info(f"[消息防抖动] 开始防抖处理: {message_str[:50]}")
         
         # 防抖时间 <= 0，不进行防抖
         if self.debounce_time <= 0:
-            logger.info(f"[消息防抖动] 防抖时间 <= 0，直接放行")
             return
         
-        # 消息缓冲区 - 先把第一条消息加入
-        buffer: List[str] = [message_str]
+        # 消息缓冲区（第一条消息也会通过 collect_messages 加入）
+        buffer: List[str] = []
         
         # 存储图片 URL 列表
         image_urls = []
         
-        # 检查第一条消息是否包含图片
-        for component in event.message_obj.message:
-            if hasattr(component, '__class__') and component.__class__.__name__ == 'Image':
-                if hasattr(component, 'url'):
-                    image_urls.append(component.url)
-                elif hasattr(component, 'file'):
-                    image_urls.append(component.file)
-        
-        # 会话控制器：收集后续消息 + 超时判断
+        # 会话控制器：收集消息 + 超时判断
+        # 注意：第一条消息也会进入这个函数
         @session_waiter(timeout=self.debounce_time, record_history_chains=False)
         async def collect_messages(
             controller: SessionController,
@@ -138,7 +123,6 @@ class ContinuousMessagePlugin(Star):
             
             # 如果有文本，检查是否是指令
             if text and self.is_command(text):
-                logger.info(f"[消息防抖动] 收到指令，结束聚合: {text}")
                 controller.stop()
                 return
             
@@ -153,18 +137,13 @@ class ContinuousMessagePlugin(Star):
             if has_image and not text:
                 buffer.append("[图片]")
             
-            logger.info(f"[消息防抖动] 消息已加入缓冲区，当前数量: {len(buffer)}, 图片数: {len(image_urls)}")
-            
             # 重置超时时间
             controller.keep(timeout=self.debounce_time, reset_timeout=True)
         
         try:
-            # 接管第一条消息
-            event.stop_event()
-            
-            # 开始收集后续消息
+            # 启动会话控制器，第一条消息也会进入 collect_messages
             await collect_messages(event)
-            # 还没超时，继续等待
+            # 如果正常返回（没有超时），说明被 controller.stop() 停止了
             return
             
         except TimeoutError:
@@ -174,7 +153,6 @@ class ContinuousMessagePlugin(Star):
                 return
 
             logger.info(f"[消息防抖动] 防抖超时，合并了 {len(buffer)} 条消息，图片数: {len(image_urls)}")
-            logger.info(f"[消息防抖动] 合并后的消息: {merged_message[:100]}...")
             
             # 接管这轮消息
             event.stop_event()
@@ -187,37 +165,20 @@ class ContinuousMessagePlugin(Star):
                 yield event.plain_result("错误：未配置LLM提供商")
                 return
             
-            logger.info(f"[消息防抖动] LLM 提供商: {provider}")
-            
             # 获取人格设定
-            # 策略：使用当前会话配置的人格
             try:
-                # 使用 AstrBot 的会话人格配置系统
-                # umo (unified_msg_origin) 唯一标识当前会话
                 persona = await self.context.persona_manager.get_default_persona_v3(umo=umo)
                 
                 if persona:
-                    # v3 格式可能返回字典或对象，需要兼容处理
                     if isinstance(persona, dict):
-                        # 如果是字典格式，从字典中提取 prompt
                         system_prompt = persona.get('prompt') or persona.get('system_prompt')
                     else:
-                        # 如果是对象格式，使用属性访问
                         system_prompt = getattr(persona, 'prompt', None) or getattr(persona, 'system_prompt', None)
-                    
-                    if system_prompt:
-                        logger.info(f"[消息防抖动] 使用会话人格，长度: {len(system_prompt)}")
-                    else:
-                        logger.warning(f"[消息防抖动] 人格数据中未找到 prompt，使用 None")
-                        system_prompt = None
                 else:
                     system_prompt = None
-                    logger.warning(f"[消息防抖动] 会话未配置人格，使用 None")
                     
             except Exception as e:
                 logger.error(f"[消息防抖动] 获取会话人格失败: {e}")
-                import traceback
-                traceback.print_exc()
                 system_prompt = None
             
             # 获取对话历史
@@ -234,15 +195,12 @@ class ContinuousMessagePlugin(Star):
                     context_history = json.loads(conversation.history)
                 else:
                     context_history = []
-                logger.info(f"[消息防抖动] 对话历史条数: {len(context_history)}")
             except Exception as e:
                 logger.warning(f"[消息防抖动] 获取对话历史失败: {e}")
                 context_history = []
             
             # 调用 LLM
             try:
-                
-                logger.info(f"[消息防抖动] 正在请求 LLM...")
                 response = await provider.text_chat(
                     prompt=merged_message,
                     context=context_history,
@@ -265,8 +223,6 @@ class ContinuousMessagePlugin(Star):
                     yield event.plain_result("抱歉，AI 没有返回有效响应。")
                     return
                 
-                logger.info(f"[消息防抖动] LLM 响应长度: {len(response_text)} 字符")
-                
                 # 更新对话历史
                 try:
                     context_history.append({"role": "user", "content": merged_message})
@@ -276,14 +232,11 @@ class ContinuousMessagePlugin(Star):
                         curr_cid,
                         history=context_history
                     )
-                    logger.info(f"[消息防抖动] 已更新对话历史")
                 except Exception as e:
                     logger.warning(f"[消息防抖动] 更新对话历史失败: {e}")
                 
                 # 发送回复
-                logger.info(f"[消息防抖动] 正在发送回复...")
                 yield event.plain_result(response_text)
-                logger.info(f"[消息防抖动] 已发送 LLM 回复")
                 
             except Exception as e:
                 logger.error(f"[消息防抖动] LLM 请求失败: {e}", exc_info=True)
