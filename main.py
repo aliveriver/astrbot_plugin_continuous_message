@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 @register(
     "continuous_message",
-    "AstrBot Plugin Developer",
+    "aliveriver",
     "将用户短时间内发送的多条私聊消息合并成一条发送给LLM（仅私聊模式）",
     "1.0.0"
 )
@@ -194,7 +194,6 @@ class ContinuousMessagePlugin(Star):
             try:
                 # 使用 AstrBot 的会话人格配置系统
                 # umo (unified_msg_origin) 唯一标识当前会话
-                # 注意：get_default_persona_v3() 是异步方法，需要 await
                 persona = await self.context.persona_manager.get_default_persona_v3(umo=umo)
                 
                 if persona:

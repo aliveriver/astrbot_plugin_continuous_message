@@ -1,6 +1,6 @@
 name: astrbot_plugin_continuous_message
 display_name: 消息防抖动
 version: 1.0.0
-author: AstrBot Plugin Developer
+author: aliveriver
 description: 将用户短时间内发送的多条私聊消息合并成一条发送给LLM，避免频繁触发AI回复（仅私聊模式）
-repo: https://github.com/yourusername/astrbot_plugin_continuous_message
+repo: https://github.com/aliveriver/astrbot_plugin_continuous_message
