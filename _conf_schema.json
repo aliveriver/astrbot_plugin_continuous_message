@@ -59,5 +59,84 @@
     "type": "float",
     "default": 60,
     "hint": "用户正在输入时的最大等待时间。超过此时间未收到新的输入状态通知将自动恢复结算，防止平台未发送停止输入事件或因为网络原因导致卡死。建议设置根据个人使用习惯来调整。"
+  },
+  "enable_link_parsing": {
+    "description": "启用链接解析增强",
+    "type": "bool",
+    "default": true,
+    "hint": "自动识别消息里的链接并补充标题、正文、图片等信息，帮助消息防抖后的上下文更完整。",
+    "obvious_hint": true
+  },
+  "link_parser_merge_images": {
+    "description": "合并解析出的图片",
+    "type": "bool",
+    "default": true,
+    "hint": "将链接解析结果中的图片或视频封面并入最终发送消息的图片列表中。"
+  },
+  "link_parser_max_links": {
+    "description": "单次最多解析链接数",
+    "type": "int",
+    "default": 3,
+    "hint": "一次合并结算中最多解析多少个链接，建议范围 1-5。"
+  },
+  "link_parser_timeout": {
+    "description": "链接解析超时（秒）",
+    "type": "float",
+    "default": 12.0,
+    "hint": "单个链接解析请求的总超时时间。"
+  },
+  "link_parser_max_text_length": {
+    "description": "正文截断长度",
+    "type": "int",
+    "default": 600,
+    "hint": "解析出的正文最多保留多少字符，避免补充内容过长。"
+  },
+  "link_parser_prefix": {
+    "description": "链接解析分节标题",
+    "type": "string",
+    "default": "[链接解析]",
+    "hint": "追加到合并消息中的链接解析内容前缀。"
+  },
+  "link_parser_proxy": {
+    "description": "链接解析代理",
+    "type": "string",
+    "default": "",
+    "hint": "可选。填写 HTTP 或 HTTPS 代理地址，例如 http://127.0.0.1:7890。"
+  },
+  "link_parser_bilibili_cookies": {
+    "description": "Bilibili Cookies",
+    "type": "string",
+    "default": "",
+    "hint": "可选。用于提升 Bilibili 链接解析稳定性。"
+  },
+  "link_parser_douyin_cookies": {
+    "description": "Douyin Cookies",
+    "type": "string",
+    "default": "",
+    "hint": "可选。用于提升抖音分享页和详情页解析稳定性。"
+  },
+  "link_parser_xiaoheihe_cookies": {
+    "description": "Xiaoheihe Cookies",
+    "type": "string",
+    "default": "",
+    "hint": "可选。用于提升小黑盒链接解析稳定性；帖子解析建议带上 x_xhh_tokenid。"
+  },
+  "link_parser_ncm_cookies": {
+    "description": "Netease Music Cookies",
+    "type": "string",
+    "default": "",
+    "hint": "可选。用于提升网易云音乐链接解析稳定性。"
+  },
+  "link_parser_weibo_cookies": {
+    "description": "Weibo Cookies",
+    "type": "string",
+    "default": "",
+    "hint": "可选。用于提升微博链接解析稳定性。"
+  },
+  "link_parser_xhs_cookies": {
+    "description": "Xiaohongshu Cookies",
+    "type": "string",
+    "default": "",
+    "hint": "可选。用于提升小红书链接解析稳定性。"
   }
 }

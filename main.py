@@ -6,6 +6,7 @@ from astrbot.api import AstrBotConfig, logger
 
 from .message_parser import MessageParser, IS_AIOCQHTTP
 from .forward_handler import ForwardHandler
+from .link_parser_adapter import LinkParserAdapter
 
 # 检查是否为 aiocqhttp 平台
 if IS_AIOCQHTTP:
@@ -73,8 +74,16 @@ class ContinuousMessagePlugin(Star):
 
         self.parser = MessageParser(image_component=image_comp, plain_component=plain_comp)
         self.forward_handler = ForwardHandler(reply_format=reply_format, bot_reply_hint=bot_reply_hint)
+        self.link_parser = LinkParserAdapter(self.config)
 
-        logger.info(f"[消息防抖动] v2.2.1 加载 | 事件驱动模式 | 防抖: {self.debounce_time}s | 合并消息: {self.enable_forward_analysis} | 输入感知: {self.enable_typing_detection}")
+        logger.info(
+            f"[消息防抖动] v2.2.1 加载 | 事件驱动模式 | 防抖: {self.debounce_time}s "
+            f"| 合并消息: {self.enable_forward_analysis} | 输入感知: {self.enable_typing_detection} "
+            f"| 链接解析: {self.link_parser.enabled}"
+        )
+
+    async def terminate(self):
+        await self.link_parser.close()
 
     async def _timer_coroutine(self, uid: str, duration: float):
         """
@@ -228,6 +237,7 @@ class ContinuousMessagePlugin(Star):
         buffer = session_data['buffer']
         all_images = session_data['images']
         merged_text = self.merge_separator.join(buffer).strip()
+        merged_text, all_images = await self.link_parser.enrich(merged_text, all_images)
         
         if not merged_text and not all_images:
             return
