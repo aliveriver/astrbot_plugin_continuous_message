@@ -13,6 +13,13 @@
     "hint": "用户在此时间内发送的多条消息会被合并成一条。建议设置为 1.5-3.0 秒。",
     "obvious_hint": true
   },
+  "enable_recall_filter": {
+    "description": "启用撤回消息过滤",
+    "type": "bool",
+    "default": true,
+    "hint": "在防抖等待期间，若用户撤回了某条消息，插件会将其从待合并队列中移除。若所有消息均被撤回，则不会向 LLM 发送任何内容（仅 aiocqhttp/OneBot v11 平台有效）。",
+    "obvious_hint": true
+  },
   "command_prefixes": {
     "description": "指令前缀列表",
     "type": "list",
