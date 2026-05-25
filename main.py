@@ -16,11 +16,11 @@ if IS_AIOCQHTTP:
     "continuous_message",
     "aliveriver",
     "将用户短时间内发送的多条私聊消息合并成一条发送给LLM（仅私聊模式，支持合并转发消息、引用消息、输入状态感知）",
-    "2.3.0"
+    "2.4.0"
 )
 class ContinuousMessagePlugin(Star):
     """
-    消息防抖动插件 v2.3.0
+    消息防抖动插件 v2.4.0
     消息防抖动插件（仅私聊模式）
     
     功能：

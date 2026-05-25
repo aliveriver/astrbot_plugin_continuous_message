@@ -1,5 +1,31 @@
 # 更新日志
 
+## v2.4.0
+
+### 新增功能
+- ✨ **撤回消息过滤**（仅 aiocqhttp / OneBot v11 平台）
+  - 在防抖等待期间，若用户撤回了某条消息，插件会自动将其从待合并队列中移除
+  - 若所有消息均被撤回，则本次结算直接终止，不会向 LLM 发送任何内容
+  - 通过 `message_id` 精确匹配，兼容整数与字符串混用场景
+
+### 配置项新增
+- `enable_recall_filter` (bool, 默认: true)
+  - 控制是否启用撤回消息过滤功能
+  - 关闭后撤回操作不会影响已进入防抖队列的消息
+
+### 技术改进
+- 会话数据结构新增 `items` 列表，每条消息携带 `message_id`、`text`、`images`，支持按 ID 精确删除
+- 新增 `MessageParser.get_message_id()` 方法：从事件中提取消息 ID
+- 新增 `MessageParser.is_recall_event()` 方法：检测撤回通知事件
+- 新增 `MessageParser.get_recalled_message_id()` 方法：从撤回事件中提取被撤回消息 ID
+- 结算阶段在合并结果为空时调用 `event.stop_event()` 阻止空消息继续传播
+
+### 兼容性
+- ✅ 向后兼容 v2.3.0 的所有功能
+- ✅ 非 aiocqhttp 平台不受影响（撤回检测自动跳过）
+
+---
+
 ## v2.3.0
 
 ### 新增功能
