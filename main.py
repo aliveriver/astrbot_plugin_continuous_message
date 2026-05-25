@@ -16,11 +16,11 @@ if IS_AIOCQHTTP:
     "continuous_message",
     "aliveriver",
     "将用户短时间内发送的多条私聊消息合并成一条发送给LLM（仅私聊模式，支持合并转发消息、引用消息、输入状态感知）",
-    "2.3.0"
+    "2.4.0"
 )
 class ContinuousMessagePlugin(Star):
     """
-    消息防抖动插件 v2.3.0
+    消息防抖动插件 v2.4.0
     消息防抖动插件（仅私聊模式）
     
     功能：
@@ -49,6 +49,7 @@ class ContinuousMessagePlugin(Star):
         self.forward_prefix = self.config.get('forward_prefix', '【合并转发内容】\n')
         self.enable_typing_detection = self.config.get('enable_typing_detection', True)
         self.max_typing_wait = float(self.config.get('max_typing_wait', 60.0))
+        self.enable_recall_filter = self.config.get('enable_recall_filter', True)
 
         # 引用消息配置
         reply_format = '[引用消息({sender_name}: {full_text})]'
@@ -83,6 +84,7 @@ class ContinuousMessagePlugin(Star):
         logger.info(
             f"[消息防抖动] v2.3.0 加载 | 事件驱动模式 | 防抖: {self.debounce_time}s "
             f"| 合并消息: {self.enable_forward_analysis} | 输入感知: {self.enable_typing_detection} "
+            f"| 撤回过滤: {self.enable_recall_filter} "
             f"| QQ卡片解析: {self.parser.enable_qq_card_parsing} | 链接解析: {self.link_parser.enabled}"
         )
 
@@ -145,6 +147,38 @@ class ContinuousMessagePlugin(Star):
             event.stop_event()
             return
 
+        # 0b. 撤回消息过滤：在防抖窗口内移除被撤回的消息
+        if self.enable_recall_filter and self.parser.is_recall_event(event):
+            recalled_mid = self.parser.get_recalled_message_id(event)
+            uid = event.unified_msg_origin
+            if recalled_mid is not None and uid in self.sessions:
+                session = self.sessions[uid]
+                before_count = len(session['items'])
+                # 移除匹配 message_id 的 item（str 比较兼容整数/字符串混用）
+                session['items'] = [
+                    item for item in session['items']
+                    if str(item['message_id']) != str(recalled_mid)
+                ]
+                after_count = len(session['items'])
+                if after_count < before_count:
+                    # 重建 buffer 和 images
+                    session['buffer'] = [item['text'] for item in session['items'] if item['text']]
+                    session['images'] = [url for item in session['items'] for url in item['images']]
+                    logger.info(
+                        f"[消息防抖动] 已过滤撤回消息 | message_id: {recalled_mid} "
+                        f"| 剩余 {after_count} 条 - 用户: {uid}"
+                    )
+                    # 若队列已空，立即触发结算（结算阶段会 stop_event 阻止空消息）
+                    if after_count == 0:
+                        logger.info(f"[消息防抖动] 所有消息均已撤回，终止本次结算 - 用户: {uid}")
+                        session['flush_event'].set()
+                else:
+                    logger.debug(
+                        f"[消息防抖动] 收到撤回通知但未找到对应消息 | message_id: {recalled_mid} - 用户: {uid}"
+                    )
+            event.stop_event()
+            return
+
         # 0. 检测并处理合并转发消息（仅aiocqhttp平台）
         forward_text = ""
         forward_images = []
@@ -198,7 +232,14 @@ class ContinuousMessagePlugin(Star):
         # 场景 A: 追加到现有会话 (Msg 2, 3...)
         if uid in self.sessions:
             session = self.sessions[uid]
-            
+
+            # 构建带 message_id 的 item 并追加
+            message_id = self.parser.get_message_id(event)
+            session['items'].append({
+                'message_id': message_id,
+                'text': raw_text,
+                'images': current_urls,
+            })
             if raw_text:
                 session['buffer'].append(raw_text)
             if current_urls:
@@ -220,10 +261,19 @@ class ContinuousMessagePlugin(Star):
         timer_task = asyncio.create_task(
             self._timer_coroutine(uid, self.debounce_time)
         )
-        
+
+        # 获取首条消息的 message_id
+        message_id = self.parser.get_message_id(event)
+        first_item = {
+            'message_id': message_id,
+            'text': raw_text,
+            'images': current_urls,
+        }
+
         self.sessions[uid] = {
             'buffer': [raw_text] if raw_text else [],
-            'images': current_urls,
+            'images': list(current_urls),
+            'items': [first_item],
             'flush_event': flush_event,
             'timer_task': timer_task,
             'is_typing': False
@@ -246,6 +296,7 @@ class ContinuousMessagePlugin(Star):
         parsed_added_image_count = max(len(all_images) - original_image_count, 0)
         
         if not merged_text and not all_images:
+            event.stop_event()
             return
 
         img_info = f" + {len(all_images)}图" if all_images else ""

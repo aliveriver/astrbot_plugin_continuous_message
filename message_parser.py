@@ -338,6 +338,54 @@ class MessageParser:
         except Exception:
             return False
 
+    def get_message_id(self, event: AstrMessageEvent):
+        """
+        获取消息的 message_id。
+        优先从 message_obj.message_id 获取，回退到 raw_message['message_id']。
+        返回字符串或整数，调用方可自行做 str() 统一比较。
+        """
+        try:
+            mid = getattr(event.message_obj, 'message_id', None)
+            if mid is not None:
+                return mid
+            raw = getattr(event.message_obj, 'raw_message', None)
+            if isinstance(raw, dict):
+                return raw.get('message_id')
+        except Exception:
+            pass
+        return None
+
+    def is_recall_event(self, event: AstrMessageEvent) -> bool:
+        """
+        检测是否为消息撤回通知事件（OneBot v11 friend_recall / group_recall）。
+        仅在 aiocqhttp 平台有效。
+        """
+        if not IS_AIOCQHTTP:
+            return False
+        try:
+            raw = getattr(event.message_obj, 'raw_message', None)
+            if not isinstance(raw, dict):
+                return False
+            return (
+                raw.get('post_type') == 'notice'
+                and raw.get('notice_type') in ('friend_recall', 'group_recall')
+            )
+        except Exception:
+            return False
+
+    def get_recalled_message_id(self, event: AstrMessageEvent):
+        """
+        从撤回通知事件中提取被撤回消息的 message_id。
+        OneBot v11 撤回事件的 message_id 字段即为被撤回消息的 ID。
+        """
+        try:
+            raw = getattr(event.message_obj, 'raw_message', None)
+            if isinstance(raw, dict):
+                return raw.get('message_id')
+        except Exception:
+            pass
+        return None
+
     def parse_message(self, message_obj) -> Tuple[str, bool, List[str]]:
         """
         解析消息对象，提取文本、图片和合并转发信息
