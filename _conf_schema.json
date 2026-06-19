@@ -43,16 +43,10 @@
     "obvious_hint": true
   },
   "forward_prefix": {
-    "description": "合并转发内容前缀",
+    "description": "合并转发内容前缀（已废弃，内容现由 XML 标签包裹）",
     "type": "string",
-    "default": "【合并转发内容】\n",
-    "hint": "在提取的合并转发内容前添加的标识前缀。"
-  },
-  "bot_reply_hint": {
-    "description": "Bot 自己消息的引用提示",
-    "type": "string",
-    "default": "[系统提示：以上引用的消息是你(助手)之前发送的内容，不是用户说的话]",
-    "hint": "当用户引用 Bot 自己发送的消息时，附加的系统提示词，用于提醒 LLM 这是它自己说的话。"
+    "default": "",
+    "hint": "此字段已废弃。合并转发内容现在由插件自动使用 <forward_content> XML 标签包裹，无需前缀。保留此字段仅为兼容旧配置。"
   },
   "enable_typing_detection": {
     "description": "启用输入状态感知",

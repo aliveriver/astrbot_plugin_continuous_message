@@ -20,9 +20,8 @@ except ImportError:
 class ForwardHandler:
     """合并转发与引用消息处理器"""
     
-    def __init__(self, reply_format: str, bot_reply_hint: str):
+    def __init__(self, reply_format: str):
         self.reply_format = reply_format
-        self.bot_reply_hint = bot_reply_hint
 
     async def detect_forward_message(self, event: 'AiocqhttpMessageEvent') -> Optional[str]:
         """
@@ -150,11 +149,8 @@ class ForwardHandler:
             if not full_text:
                 return "", image_urls
             
-            # 格式化文本，如果是bot自己的消息，添加特殊标记
-            if is_bot_message:
-                formatted_text = self.reply_format.format(sender_name=sender_name, full_text=full_text) + "\n" + self.bot_reply_hint
-            else:
-                formatted_text = self.reply_format.format(sender_name=sender_name, full_text=full_text)
+            # 格式化文本，sender 属性已足以标明发送者身份（包括bot自己），无需额外提示
+            formatted_text = self.reply_format.format(sender_name=sender_name, full_text=full_text)
             
             return formatted_text, image_urls
             
@@ -225,7 +221,10 @@ class ForwardHandler:
             else:
                 logger.warning(f"[消息防抖动] 节点没有文本内容，跳过")
 
-        return "\n".join(extracted_texts), image_urls
+        inner = "\n".join(extracted_texts)
+        logger.debug(f"[消息防抖动] 合并转发提取完成 | 节点数: {len(forward_data['messages'])} | 有效文本节点数: {len(extracted_texts)} | 图片数: {len(image_urls)} | 内容预览: {inner[:200]!r}")
+        wrapped = f"<forward_content>\n{inner}\n</forward_content>" if inner else ""
+        return wrapped, image_urls
 
     def _parse_raw_content(self, raw_content) -> List[dict]:
         """
