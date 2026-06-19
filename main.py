@@ -16,11 +16,11 @@ if IS_AIOCQHTTP:
     "continuous_message",
     "aliveriver",
     "将用户短时间内发送的多条私聊消息合并成一条发送给LLM（仅私聊模式，支持合并转发消息、引用消息、输入状态感知）",
-    "2.4.0"
+    "2.5.0"
 )
 class ContinuousMessagePlugin(Star):
     """
-    消息防抖动插件 v2.4.0
+    消息防抖动插件 v2.5.0
     消息防抖动插件（仅私聊模式）
     
     功能：
@@ -46,18 +46,17 @@ class ContinuousMessagePlugin(Star):
         self.enable_plugin = self.config.get('enable', True)
         self.merge_separator = self.config.get('merge_separator', '\n')
         self.enable_forward_analysis = self.config.get('enable_forward_analysis', True)
-        self.forward_prefix = self.config.get('forward_prefix', '【合并转发内容】\n')
+        self.forward_prefix = self.config.get('forward_prefix', '')
         self.enable_typing_detection = self.config.get('enable_typing_detection', True)
         self.max_typing_wait = float(self.config.get('max_typing_wait', 60.0))
         self.enable_recall_filter = self.config.get('enable_recall_filter', True)
 
-        # 引用消息配置
-        reply_format = '[引用消息({sender_name}: {full_text})]'
-        bot_reply_hint = self.config.get('bot_reply_hint', '[系统提示：以上引用的消息是你(助手)之前发送的内容，不是用户说的话]')
-        
+        # 引用消息配置（sender 属性已标明发送者，LLM 可自行推断角色，无需额外 hint）
+        reply_format = '<quoted_message sender="{sender_name}">{full_text}</quoted_message>'
+
         # 会话存储
         self.sessions: Dict[str, Dict] = {}
-        
+
         # 初始化子模块
         image_comp = None
         plain_comp = None
@@ -78,7 +77,7 @@ class ContinuousMessagePlugin(Star):
             plain_component=plain_comp,
             plugin_config=self.config,
         )
-        self.forward_handler = ForwardHandler(reply_format=reply_format, bot_reply_hint=bot_reply_hint)
+        self.forward_handler = ForwardHandler(reply_format=reply_format)
         self.link_parser = LinkParserAdapter(self.config)
 
         logger.info(
@@ -204,11 +203,9 @@ class ContinuousMessagePlugin(Star):
         
         # 合并转发内容处理
         if forward_text:
-            if forward_text.startswith('[引用消息('):
-                raw_text = forward_text + ("\n" + raw_text if raw_text else "")
-            else:
-                prefix_text = self.forward_prefix + forward_text
-                raw_text = prefix_text + ("\n" + raw_text if raw_text else "")
+            # quoted_message 和 forward_content 都已由 ForwardHandler 包裹好 XML 标签，直接前置拼接
+            raw_text = forward_text + ("\n" + raw_text if raw_text else "")
+            logger.debug(f"[消息防抖动] 已合并元信息 | 元信息类型: {'引用消息' if forward_text.startswith('<quoted_message') else '合并转发'} | 元信息长度: {len(forward_text)}字")
         if forward_images:
             current_urls.extend(forward_images)
             has_image = True
@@ -244,15 +241,21 @@ class ContinuousMessagePlugin(Star):
                 session['buffer'].append(raw_text)
             if current_urls:
                 session['images'].extend(current_urls)
-            
+
             # 重置计时器
             if session.get('timer_task'):
                 session['timer_task'].cancel()
-            
+
             session['timer_task'] = asyncio.create_task(
                 self._timer_coroutine(uid, self.debounce_time)
             )
-            
+
+            logger.debug(
+                f"[消息防抖动] 追加消息 | message_id: {message_id} | buffer长度: {len(session['buffer'])} "
+                f"| 图片: {len(current_urls)}张 | 计时器已重置 {self.debounce_time}s - 用户: {uid}"
+            )
+            if raw_text:
+                logger.debug(f"[消息防抖动] 追加文本内容: {raw_text[:100]}{'...' if len(raw_text) > 100 else ''}")
             event.stop_event()
             return
 
@@ -278,8 +281,14 @@ class ContinuousMessagePlugin(Star):
             'timer_task': timer_task,
             'is_typing': False
         }
-        
+
         logger.info(f"[消息防抖动] 开始收集 - 用户: {uid}")
+        logger.debug(
+            f"[消息防抖动] 新建会话 | message_id: {message_id} | 图片: {len(current_urls)}张 "
+            f"| 防抖时长: {self.debounce_time}s"
+        )
+        if raw_text:
+            logger.debug(f"[消息防抖动] 首条消息文本: {raw_text[:100]}{'...' if len(raw_text) > 100 else ''}")
 
         await flush_event.wait()
         
@@ -304,7 +313,7 @@ class ContinuousMessagePlugin(Star):
         logger.info(
             f"[消息防抖动] 图片统计 | 原图数量: {original_image_count} | 解析追加图数量: {parsed_added_image_count}"
         )
-        logger.info(f"[消息防抖动] 合并后的完整消息:\n{merged_text}")
+        logger.debug(f"[消息防抖动] 合并后的完整消息:\n{merged_text}")
         if all_images:
             logger.debug(f"[消息防抖动] 图片列表: {all_images}")
         
