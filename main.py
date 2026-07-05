@@ -50,6 +50,11 @@ class ContinuousMessagePlugin(Star):
         self.enable_typing_detection = self.config.get('enable_typing_detection', True)
         self.max_typing_wait = float(self.config.get('max_typing_wait', 60.0))
         self.enable_recall_filter = self.config.get('enable_recall_filter', True)
+        self.enable_adaptive_debounce = bool(self.config.get('enable_adaptive_debounce', True))
+        self.adaptive_min_wait = float(self.config.get('adaptive_min_wait', 1.0))
+        self.adaptive_max_wait = float(self.config.get('adaptive_max_wait', 6.0))
+        self.adaptive_max_total_wait = float(self.config.get('adaptive_max_total_wait', 12.0))
+        self.adaptive_short_message_threshold = int(self.config.get('adaptive_short_message_threshold', 10))
 
         # 引用消息配置（sender 属性已标明发送者，LLM 可自行推断角色，无需额外 hint）
         reply_format = '<quoted_message sender="{sender_name}">{full_text}</quoted_message>'
@@ -83,6 +88,7 @@ class ContinuousMessagePlugin(Star):
         logger.info(
             f"[消息防抖动] v2.3.0 加载 | 事件驱动模式 | 防抖: {self.debounce_time}s "
             f"| 合并消息: {self.enable_forward_analysis} | 输入感知: {self.enable_typing_detection} "
+            f"| 自适应防抖: {self.enable_adaptive_debounce}({self.adaptive_min_wait}-{self.adaptive_max_wait}s, 总上限{self.adaptive_max_total_wait}s) "
             f"| 撤回过滤: {self.enable_recall_filter} "
             f"| QQ卡片解析: {self.parser.enable_qq_card_parsing} | 链接解析: {self.link_parser.enabled}"
         )
@@ -103,6 +109,106 @@ class ContinuousMessagePlugin(Star):
                 self.sessions[uid]['flush_event'].set()
         except asyncio.CancelledError:
             pass
+
+    @staticmethod
+    def _now() -> float:
+        return asyncio.get_running_loop().time()
+
+    def _is_short_message(self, text: str) -> bool:
+        return len((text or "").strip()) <= self.adaptive_short_message_threshold
+
+    def _update_short_message_count(self, session: dict, text: str) -> int:
+        if self._is_short_message(text):
+            session['short_message_count'] = session.get('short_message_count', 0) + 1
+        else:
+            session['short_message_count'] = 0
+        return session['short_message_count']
+
+    def _calculate_wait_duration(self, text: str, session: dict = None):
+        """根据消息形态计算下一轮等待时间；返回 (等待秒数, 是否立即结算, 原因)。"""
+        if not self.enable_adaptive_debounce:
+            return self.debounce_time, False, "fixed_debounce"
+
+        clean = (text or "").strip()
+        length = len(clean)
+        reasons = []
+
+        if length <= 3:
+            wait = 4.0
+            reasons.append("very_short")
+        elif length <= 10:
+            wait = 3.2
+            reasons.append("short")
+        elif length <= 30:
+            wait = 2.5
+            reasons.append("medium")
+        elif length <= 80:
+            wait = 1.5
+            reasons.append("long")
+        else:
+            wait = 1.0
+            reasons.append("very_long")
+
+        if clean.endswith(("...", "…", "，", "、", "：", ":")):
+            wait += 1.8
+            reasons.append("unfinished_punctuation")
+        elif clean.endswith(("？", "?")):
+            wait -= 0.8
+            reasons.append("question_end")
+        elif clean.endswith(("。", "！", "!")):
+            wait -= 0.4
+            reasons.append("sentence_end")
+        elif clean and clean[-1] not in "。！？!?，、：:；;,.…":
+            wait += 1.0
+            reasons.append("no_end_punctuation")
+
+        if session:
+            short_count = self._update_short_message_count(session, clean)
+            if short_count >= 4:
+                wait += 0.8
+                reasons.append("short_streak_4plus")
+            elif short_count == 3:
+                wait += 0.6
+                reasons.append("short_streak_3")
+            elif short_count == 2:
+                wait += 0.3
+                reasons.append("short_streak_2")
+
+        wait = max(self.adaptive_min_wait, min(wait, self.adaptive_max_wait))
+
+        if session and session.get('started_at') is not None:
+            elapsed = self._now() - session['started_at']
+            remaining = self.adaptive_max_total_wait - elapsed
+            if remaining <= 0:
+                return 0.0, True, ",".join(reasons + ["max_total_wait_reached"])
+            if wait > remaining:
+                wait = max(0.0, remaining)
+                reasons.append("limited_by_total_wait")
+
+        return wait, False, ",".join(reasons) or "adaptive"
+
+    @staticmethod
+    def _format_wait_reason(reason: str) -> str:
+        labels = {
+            "fixed_debounce": "固定防抖",
+            "very_short": "极短消息",
+            "short": "短消息",
+            "medium": "中等长度",
+            "long": "较长消息",
+            "very_long": "长消息",
+            "unfinished_punctuation": "未完结标点",
+            "question_end": "问号结尾",
+            "sentence_end": "句末标点",
+            "no_end_punctuation": "无结束标点",
+            "short_streak_2": "连续短句x2",
+            "short_streak_3": "连续短句x3",
+            "short_streak_4plus": "连续短句x4+",
+            "limited_by_total_wait": "受总等待上限限制",
+            "max_total_wait_reached": "达到总等待上限",
+            "adaptive": "自适应防抖",
+        }
+        parts = [labels.get(item, item) for item in (reason or "adaptive").split(",") if item]
+        return "+".join(parts) if parts else labels["adaptive"]
 
     @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE, priority=50)
     async def handle_private_msg(self, event: AstrMessageEvent):
@@ -242,17 +348,31 @@ class ContinuousMessagePlugin(Star):
             if current_urls:
                 session['images'].extend(current_urls)
 
-            # 重置计时器
+            # 重置计时器：自适应防抖会根据新增消息形态决定下一轮等待时长。
             if session.get('timer_task'):
                 session['timer_task'].cancel()
 
-            session['timer_task'] = asyncio.create_task(
-                self._timer_coroutine(uid, self.debounce_time)
-            )
+            next_wait, should_flush_now, wait_reason = self._calculate_wait_duration(raw_text, session)
+            session['last_wait'] = next_wait
+            display_reason = self._format_wait_reason(wait_reason)
+            if should_flush_now:
+                session['flush_event'].set()
+                logger.info(
+                    f"[消息防抖动] 自适应等待 | 立即结算 | 原因: {display_reason} - 用户: {uid}"
+                )
+            else:
+                session['timer_task'] = asyncio.create_task(
+                    self._timer_coroutine(uid, next_wait)
+                )
+                logger.info(
+                    f"[消息防抖动] 自适应等待 | 下一轮等待: {next_wait:.2f}s "
+                    f"| 原因: {display_reason} - 用户: {uid}"
+                )
 
             logger.debug(
                 f"[消息防抖动] 追加消息 | message_id: {message_id} | buffer长度: {len(session['buffer'])} "
-                f"| 图片: {len(current_urls)}张 | 计时器已重置 {self.debounce_time}s - 用户: {uid}"
+                f"| 图片: {len(current_urls)}张 | 计时器已重置 {next_wait:.2f}s "
+                f"| reason: {wait_reason} - 用户: {uid}"
             )
             if raw_text:
                 logger.debug(f"[消息防抖动] 追加文本内容: {raw_text[:100]}{'...' if len(raw_text) > 100 else ''}")
@@ -261,8 +381,11 @@ class ContinuousMessagePlugin(Star):
 
         # 场景 B: 启动新会话 (Msg 1)
         flush_event = asyncio.Event()
+        started_at = self._now()
+        initial_wait, _, wait_reason = self._calculate_wait_duration(raw_text)
+        display_reason = self._format_wait_reason(wait_reason)
         timer_task = asyncio.create_task(
-            self._timer_coroutine(uid, self.debounce_time)
+            self._timer_coroutine(uid, initial_wait)
         )
 
         # 获取首条消息的 message_id
@@ -279,13 +402,19 @@ class ContinuousMessagePlugin(Star):
             'items': [first_item],
             'flush_event': flush_event,
             'timer_task': timer_task,
-            'is_typing': False
+            'is_typing': False,
+            'started_at': started_at,
+            'last_wait': initial_wait,
+            'short_message_count': 1 if self._is_short_message(raw_text) else 0
         }
 
-        logger.info(f"[消息防抖动] 开始收集 - 用户: {uid}")
+        logger.info(
+            f"[消息防抖动] 开始收集 | 初始等待: {initial_wait:.2f}s "
+            f"| 原因: {display_reason} - 用户: {uid}"
+        )
         logger.debug(
             f"[消息防抖动] 新建会话 | message_id: {message_id} | 图片: {len(current_urls)}张 "
-            f"| 防抖时长: {self.debounce_time}s"
+            f"| 防抖时长: {initial_wait:.2f}s | reason: {wait_reason}"
         )
         if raw_text:
             logger.debug(f"[消息防抖动] 首条消息文本: {raw_text[:100]}{'...' if len(raw_text) > 100 else ''}")
