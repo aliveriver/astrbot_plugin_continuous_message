@@ -140,10 +140,10 @@ class ContinuousMessagePlugin(Star):
             wait = 3.2
             reasons.append("short")
         elif length <= 30:
-            wait = 2.5
+            wait = 2.7
             reasons.append("medium")
         elif length <= 80:
-            wait = 1.5
+            wait = 1.8
             reasons.append("long")
         else:
             wait = 1.0
@@ -156,11 +156,16 @@ class ContinuousMessagePlugin(Star):
             wait -= 0.8
             reasons.append("question_end")
         elif clean.endswith(("。", "！", "!")):
-            wait -= 0.4
+            wait -= 0.5
             reasons.append("sentence_end")
         elif clean and clean[-1] not in "。！？!?，、：:；;,.…":
-            wait += 1.0
-            reasons.append("no_end_punctuation")
+            if length <= 10:
+                wait += 0.8
+            elif length <= 30:
+                wait += 0.7
+            elif length <= 80:
+                wait += 0.3
+            reasons.append("chat_plain_end")
 
         if session:
             short_count = self._update_short_message_count(session, clean)
@@ -196,10 +201,10 @@ class ContinuousMessagePlugin(Star):
             "medium": "中等长度",
             "long": "较长消息",
             "very_long": "长消息",
-            "unfinished_punctuation": "未完结标点",
+            "unfinished_punctuation": "延续信号",
             "question_end": "问号结尾",
-            "sentence_end": "句末标点",
-            "no_end_punctuation": "无结束标点",
+            "sentence_end": "主动结束标点",
+            "chat_plain_end": "口语无标点",
             "short_streak_2": "连续短句x2",
             "short_streak_3": "连续短句x3",
             "short_streak_4plus": "连续短句x4+",
