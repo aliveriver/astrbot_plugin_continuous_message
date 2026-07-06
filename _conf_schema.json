@@ -1,171 +1,209 @@
 {
-  "enable": {
-    "description": "启用消息防抖动功能",
-    "type": "bool",
-    "default": true,
-    "hint": "关闭后插件将不会拦截和合并消息。注意：本插件强制仅在私聊启用，以避免群聊越权问题。",
-    "obvious_hint": true
+  "basic": {
+    "description": "基础设置",
+    "type": "object",
+    "hint": "插件总开关、指令识别和多条消息合并格式。",
+    "obvious_hint": true,
+    "items": {
+      "enable": {
+        "description": "启用消息防抖动功能",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后插件将不会拦截和合并消息。注意：本插件强制仅在私聊启用，以避免群聊越权问题。",
+        "obvious_hint": true
+      },
+      "command_prefixes": {
+        "description": "指令前缀列表",
+        "type": "list",
+        "default": ["/"],
+        "hint": "以这些前缀开头的消息会被识别为指令，不会被合并。默认为 ['/']。",
+        "invisible": false
+      },
+      "merge_separator": {
+        "description": "消息合并分隔符",
+        "type": "string",
+        "default": "\n",
+        "hint": "多条消息合并时使用的分隔符，默认为换行符。"
+      }
+    }
   },
-  "debounce_time": {
-    "description": "防抖时间（秒）",
-    "type": "float",
-    "default": 2.0,
-    "hint": "用户在此时间内发送的多条消息会被合并成一条。建议设置为 1.5-3.0 秒。",
-    "obvious_hint": true
+  "debounce": {
+    "description": "防抖策略",
+    "type": "object",
+    "hint": "控制固定防抖和自适应防抖的等待时间。",
+    "obvious_hint": true,
+    "items": {
+      "debounce_time": {
+        "description": "固定防抖时间（秒）",
+        "type": "float",
+        "default": 2.0,
+        "hint": "未启用自适应防抖时，用户在此时间内发送的多条消息会被合并成一条。建议设置为 1.5-3.0 秒。",
+        "obvious_hint": true
+      },
+      "enable_adaptive_debounce": {
+        "description": "启用自适应防抖",
+        "type": "bool",
+        "default": false,
+        "hint": "根据消息长度、结尾标点和连续短句动态调整等待时间，适合 SnowLuma 等不支持 input_status 的平台。新增消息不会刷新单轮总等待上限。",
+        "obvious_hint": true
+      },
+      "adaptive_min_wait": {
+        "description": "自适应最短等待时间（秒）",
+        "type": "float",
+        "default": 1.0,
+        "hint": "动态防抖的常规最短等待时间。注意：为保证单轮总等待上限，接近上限时可能短于该值。"
+      },
+      "adaptive_max_wait": {
+        "description": "自适应最长等待时间（秒）",
+        "type": "float",
+        "default": 6.0,
+        "hint": "动态防抖单次重置计时器时的最长等待时间。"
+      },
+      "adaptive_max_total_wait": {
+        "description": "单轮最长总等待时间（秒）",
+        "type": "float",
+        "default": 12.0,
+        "hint": "从第一条消息进入缓冲开始，最长等待多久后强制结算；新增消息不会刷新这个总上限。"
+      },
+      "adaptive_short_message_threshold": {
+        "description": "短消息字数阈值",
+        "type": "int",
+        "default": 10,
+        "hint": "小于等于该长度的消息会被认为更可能是分段表达，连续短句会适当延长等待。"
+      }
+    }
   },
-  "enable_recall_filter": {
-    "description": "启用撤回消息过滤",
-    "type": "bool",
-    "default": true,
-    "hint": "在防抖等待期间，若用户撤回了某条消息，插件会将其从待合并队列中移除。若所有消息均被撤回，则不会向 LLM 发送任何内容（仅 aiocqhttp/OneBot v11 平台有效）。",
-    "obvious_hint": true
+  "message_features": {
+    "description": "消息特性处理",
+    "type": "object",
+    "hint": "处理撤回、输入状态、引用消息和 QQ 合并转发等消息上下文。",
+    "obvious_hint": true,
+    "items": {
+      "enable_recall_filter": {
+        "description": "启用撤回消息过滤",
+        "type": "bool",
+        "default": true,
+        "hint": "在防抖等待期间，若用户撤回了某条消息，插件会将其从待合并队列中移除。若所有消息均被撤回，则不会向 LLM 发送任何内容（仅 aiocqhttp/OneBot v11 平台有效）。",
+        "obvious_hint": true
+      },
+      "enable_typing_detection": {
+        "description": "启用输入状态感知",
+        "type": "bool",
+        "default": true,
+        "hint": "检测到用户正在输入时自动延长防抖等待时间，避免用户还在打字就触发结算（仅 NapCat 等支持 input_status 的平台有效）。",
+        "obvious_hint": true
+      },
+      "max_typing_wait": {
+        "description": "输入状态超时保护（秒）",
+        "type": "float",
+        "default": 60,
+        "hint": "用户正在输入时的最大等待时间。超过此时间未收到新的输入状态通知将自动恢复结算，防止平台未发送停止输入事件或因网络原因导致卡死。"
+      },
+      "enable_forward_analysis": {
+        "description": "启用合并转发消息分析",
+        "type": "bool",
+        "default": true,
+        "hint": "是否自动提取 QQ 合并转发消息和引用消息的内容并纳入防抖处理（仅 aiocqhttp 平台支持）。",
+        "obvious_hint": true
+      },
+      "forward_prefix": {
+        "description": "合并转发内容前缀（已废弃）",
+        "type": "string",
+        "default": "",
+        "hint": "此字段已废弃。合并转发内容现在由插件自动使用 <forward_content> XML 标签包裹，无需前缀。保留此字段仅为兼容旧配置。"
+      }
+    }
   },
-  "command_prefixes": {
-    "description": "指令前缀列表",
-    "type": "list",
-    "default": [
-      "/"
-    ],
-    "hint": "以这些前缀开头的消息会被识别为指令，不会被合并。默认为 ['/']。",
-    "invisible": false
+  "qq_card": {
+    "description": "QQ 卡片解析",
+    "type": "object",
+    "hint": "从 QQ json 卡片中提取原始链接并追加到合并消息里。",
+    "obvious_hint": true,
+    "items": {
+      "enable_qq_card_parsing": {
+        "description": "启用 QQ 卡片解析",
+        "type": "bool",
+        "default": true,
+        "hint": "是否从 QQ json 卡片中提取原始链接，并把结果追加到合并消息里。",
+        "obvious_hint": true
+      },
+      "qq_card_disabled_platforms": {
+        "description": "QQ 卡片解析屏蔽平台",
+        "type": "list",
+        "default": [],
+        "hint": "填写要屏蔽的卡片平台内部名列表。可选平台：bilibili(B站)、xhs(小红书)、xiaoheihe(小黑盒)、tieba(百度贴吧)、nga(NGA)、ncm(网易云音乐)、zhihu(知乎)。",
+        "invisible": false
+      },
+      "qq_card_prompt": {
+        "description": "QQ 卡片解析引导词",
+        "type": "string",
+        "default": "[卡片链接]",
+        "hint": "每条提取出的 QQ 卡片链接前附加的引导词。留空则只输出链接本身。"
+      }
+    }
   },
-  "merge_separator": {
-    "description": "消息合并分隔符",
-    "type": "string",
-    "default": "\n",
-    "hint": "多条消息合并时使用的分隔符，默认为换行符。"
-  },
-  "enable_forward_analysis": {
-    "description": "启用合并转发消息分析",
-    "type": "bool",
-    "default": true,
-    "hint": "是否自动提取 QQ 合并转发消息的内容并纳入防抖处理（仅 aiocqhttp 平台支持）。",
-    "obvious_hint": true
-  },
-  "forward_prefix": {
-    "description": "合并转发内容前缀（已废弃，内容现由 XML 标签包裹）",
-    "type": "string",
-    "default": "",
-    "hint": "此字段已废弃。合并转发内容现在由插件自动使用 <forward_content> XML 标签包裹，无需前缀。保留此字段仅为兼容旧配置。"
-  },
-  "enable_typing_detection": {
-    "description": "启用输入状态感知",
-    "type": "bool",
-    "default": true,
-    "hint": "检测到用户正在输入时自动延长防抖等待时间，避免用户还在打字就触发结算（仅 NapCat 等支持 input_status 的平台有效）。",
-    "obvious_hint": true
-  },
-  "max_typing_wait": {
-    "description": "输入状态超时保护（秒）",
-    "type": "float",
-    "default": 60,
-    "hint": "用户正在输入时的最大等待时间。超过此时间未收到新的输入状态通知将自动恢复结算，防止平台未发送停止输入事件或因网络原因导致卡死。"
-  },
-  "enable_adaptive_debounce": {
-    "description": "启用自适应防抖",
-    "type": "bool",
-    "default": true,
-    "hint": "根据消息长度、结尾标点和连续短句动态调整等待时间，适合 SnowLuma 等不支持 input_status 的平台。新增消息不会刷新单轮总等待上限。",
-    "obvious_hint": true
-  },
-  "adaptive_min_wait": {
-    "description": "自适应最短等待时间（秒）",
-    "type": "float",
-    "default": 1.0,
-    "hint": "动态防抖的常规最短等待时间。注意：为保证单轮总等待上限，接近上限时可能短于该值。"
-  },
-  "adaptive_max_wait": {
-    "description": "自适应最长等待时间（秒）",
-    "type": "float",
-    "default": 6.0,
-    "hint": "动态防抖单次重置计时器时的最长等待时间。"
-  },
-  "adaptive_max_total_wait": {
-    "description": "单轮最长总等待时间（秒）",
-    "type": "float",
-    "default": 12.0,
-    "hint": "从第一条消息进入缓冲开始，最长等待多久后强制结算；新增消息不会刷新这个总上限。"
-  },
-  "adaptive_short_message_threshold": {
-    "description": "短消息字数阈值",
-    "type": "int",
-    "default": 10,
-    "hint": "小于等于该长度的消息会被认为更可能是分段表达，连续短句会适当延长等待。"
-  },
-  "enable_qq_card_parsing": {
-    "description": "启用 QQ 卡片解析",
-    "type": "bool",
-    "default": true,
-    "hint": "是否从 QQ json 卡片中提取原始链接，并把结果追加到合并消息里。",
-    "obvious_hint": true
-  },
-  "qq_card_disabled_platforms": {
-    "description": "QQ 卡片解析屏蔽平台",
-    "type": "list",
-    "default": [],
-    "hint": "填写要屏蔽的卡片平台内部名列表。可选平台：bilibili(B站)、xhs(小红书)、xiaoheihe(小黑盒)、tieba(百度贴吧)、nga(NGA)、ncm(网易云音乐)、zhihu(知乎)。",
-    "invisible": false
-  },
-  "qq_card_prompt": {
-    "description": "QQ 卡片解析引导词",
-    "type": "string",
-    "default": "[卡片链接]",
-    "hint": "每条提取出的 QQ 卡片链接前附加的引导词。留空则只输出链接本身。"
-  },
-  "enable_link_parsing": {
-    "description": "启用链接解析增强",
-    "type": "bool",
-    "default": true,
-    "hint": "自动识别消息里的链接并补充标题、正文、图片等信息，帮助合并后的上下文更完整。",
-    "obvious_hint": true
-  },
-  "link_parser_disabled_platforms": {
-    "description": "链接解析屏蔽平台",
-    "type": "list",
-    "default": [],
-    "hint": "填写要屏蔽的链接解析平台内部名列表。可选平台：bilibili(B站)、xhs(小红书)、xiaoheihe(小黑盒)、ncm(网易云音乐)。",
-    "invisible": false
-  },
-  "link_parser_success_prompt": {
-    "description": "链接解析成功引导词",
-    "type": "string",
-    "default": "[链接解析]",
-    "hint": "当至少有一个链接解析成功时，追加到合并消息中的分节标题。留空则只输出解析结果正文。"
-  },
-  "link_parser_failure_prompt": {
-    "description": "链接解析失败引导词",
-    "type": "string",
-    "default": "[链接解析失败]",
-    "hint": "当匹配到链接但解析失败时，追加到合并消息中的分节标题。留空则只输出失败条目正文。"
-  },
-  "link_parser_merge_images": {
-    "description": "合并解析出的图片",
-    "type": "bool",
-    "default": true,
-    "hint": "将链接解析结果中的图片或视频封面并入最终发送消息的图片列表中。"
-  },
-  "link_parser_max_links": {
-    "description": "单次最多解析链接数",
-    "type": "int",
-    "default": 3,
-    "hint": "一次合并结算中最多解析多少个链接，建议范围 1-5。"
-  },
-  "link_parser_timeout": {
-    "description": "链接解析超时（秒）",
-    "type": "float",
-    "default": 12.0,
-    "hint": "单个链接解析请求的总超时时间。"
-  },
-  "link_parser_max_text_length": {
-    "description": "正文截断长度",
-    "type": "int",
-    "default": 600,
-    "hint": "解析出的正文最多保留多少字符，避免补充内容过长。"
-  },
-  "link_parser_proxy": {
-    "description": "链接解析代理",
-    "type": "string",
-    "default": "",
-    "hint": "可选。填写 HTTP 或 HTTPS 代理地址，例如 http://127.0.0.1:7890。"
+  "link_parser": {
+    "description": "链接解析增强",
+    "type": "object",
+    "hint": "识别消息里的链接并补充标题、正文、图片或视频封面等信息。",
+    "obvious_hint": true,
+    "items": {
+      "enable_link_parsing": {
+        "description": "启用链接解析增强",
+        "type": "bool",
+        "default": true,
+        "hint": "自动识别消息里的链接并补充标题、正文、图片等信息，帮助合并后的上下文更完整。",
+        "obvious_hint": true
+      },
+      "link_parser_disabled_platforms": {
+        "description": "链接解析屏蔽平台",
+        "type": "list",
+        "default": [],
+        "hint": "填写要屏蔽的链接解析平台内部名列表。可选平台：bilibili(B站)、xhs(小红书)、xiaoheihe(小黑盒)、ncm(网易云音乐)。",
+        "invisible": false
+      },
+      "link_parser_success_prompt": {
+        "description": "链接解析成功引导词",
+        "type": "string",
+        "default": "[链接解析]",
+        "hint": "当至少有一个链接解析成功时，追加到合并消息中的分节标题。留空则只输出解析结果正文。"
+      },
+      "link_parser_failure_prompt": {
+        "description": "链接解析失败引导词",
+        "type": "string",
+        "default": "[链接解析失败]",
+        "hint": "当匹配到链接但解析失败时，追加到合并消息中的分节标题。留空则只输出失败条目正文。"
+      },
+      "link_parser_merge_images": {
+        "description": "合并解析出的图片",
+        "type": "bool",
+        "default": true,
+        "hint": "将链接解析结果中的图片或视频封面并入最终发送消息的图片列表中。"
+      },
+      "link_parser_max_links": {
+        "description": "单次最多解析链接数",
+        "type": "int",
+        "default": 3,
+        "hint": "一次合并结算中最多解析多少个链接，建议范围 1-5。"
+      },
+      "link_parser_timeout": {
+        "description": "链接解析超时（秒）",
+        "type": "float",
+        "default": 12.0,
+        "hint": "单个链接解析请求的总超时时间。"
+      },
+      "link_parser_max_text_length": {
+        "description": "正文截断长度",
+        "type": "int",
+        "default": 600,
+        "hint": "解析出的正文最多保留多少字符，避免补充内容过长。"
+      },
+      "link_parser_proxy": {
+        "description": "链接解析代理",
+        "type": "string",
+        "default": "",
+        "hint": "可选。填写 HTTP 或 HTTPS 代理地址，例如 http://127.0.0.1:7890。"
+      }
+    }
   }
 }
