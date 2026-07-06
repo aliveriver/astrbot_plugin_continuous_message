@@ -1,5 +1,24 @@
 # 更新日志
 
+## Unreleased
+
+### 新增功能
+- ✨ **自适应防抖**：新增不依赖 `input_status` 的动态等待机制，适合 SnowLuma 等暂不支持输入状态通知的 OneBot v11 实现
+  - 根据新增消息长度、结尾标点和连续短句数量调整下一轮等待时间
+  - 短句、逗号、省略号和连续短句会适当延长等待
+  - 无标点按聊天口语输入处理，不再一概视为未完成，而是根据消息长度轻量加权
+  - 长句、问号、句号和感叹号会倾向于更快结算
+  - 单轮从第一条消息开始最多等待 `adaptive_max_total_wait` 秒，新增消息不会刷新这个总上限
+
+### 配置项新增
+- `enable_adaptive_debounce` (bool, 默认: true)
+- `adaptive_min_wait` (float, 默认: 1.0)
+- `adaptive_max_wait` (float, 默认: 6.0)
+- `adaptive_max_total_wait` (float, 默认: 12.0)
+- `adaptive_short_message_threshold` (int, 默认: 10)
+
+---
+
 ## v2.5.0
 
 ### 改进

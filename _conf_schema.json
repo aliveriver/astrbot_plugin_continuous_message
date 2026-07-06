@@ -61,6 +61,37 @@
     "default": 60,
     "hint": "用户正在输入时的最大等待时间。超过此时间未收到新的输入状态通知将自动恢复结算，防止平台未发送停止输入事件或因网络原因导致卡死。"
   },
+  "enable_adaptive_debounce": {
+    "description": "启用自适应防抖",
+    "type": "bool",
+    "default": true,
+    "hint": "根据消息长度、结尾标点和连续短句动态调整等待时间，适合 SnowLuma 等不支持 input_status 的平台。新增消息不会刷新单轮总等待上限。",
+    "obvious_hint": true
+  },
+  "adaptive_min_wait": {
+    "description": "自适应最短等待时间（秒）",
+    "type": "float",
+    "default": 1.0,
+    "hint": "动态防抖的常规最短等待时间。注意：为保证单轮总等待上限，接近上限时可能短于该值。"
+  },
+  "adaptive_max_wait": {
+    "description": "自适应最长等待时间（秒）",
+    "type": "float",
+    "default": 6.0,
+    "hint": "动态防抖单次重置计时器时的最长等待时间。"
+  },
+  "adaptive_max_total_wait": {
+    "description": "单轮最长总等待时间（秒）",
+    "type": "float",
+    "default": 12.0,
+    "hint": "从第一条消息进入缓冲开始，最长等待多久后强制结算；新增消息不会刷新这个总上限。"
+  },
+  "adaptive_short_message_threshold": {
+    "description": "短消息字数阈值",
+    "type": "int",
+    "default": 10,
+    "hint": "小于等于该长度的消息会被认为更可能是分段表达，连续短句会适当延长等待。"
+  },
   "enable_qq_card_parsing": {
     "description": "启用 QQ 卡片解析",
     "type": "bool",
