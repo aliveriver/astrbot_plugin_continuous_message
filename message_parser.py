@@ -313,6 +313,91 @@ class MessageParser:
         non_wrappers = [u for u in deduped if not self._is_wrapper_share_url(u)]
         return non_wrappers or deduped
 
+    @staticmethod
+    def _dedupe_keep_order(values: List[str]) -> List[str]:
+        deduped = []
+        seen = set()
+        for value in values:
+            if value and value not in seen:
+                seen.add(value)
+                deduped.append(value)
+        return deduped
+
+    @staticmethod
+    def _raw_get(raw, key, default=None):
+        try:
+            if isinstance(raw, dict):
+                return raw.get(key, default)
+            if hasattr(raw, "get"):
+                return raw.get(key, default)
+        except Exception:
+            pass
+        return getattr(raw, key, default)
+
+    def _extract_image_urls_from_raw_message(self, message_obj) -> List[str]:
+        """Prefer durable image refs from the platform payload over temp files."""
+        raw = getattr(message_obj, "raw_message", None)
+        raw_chain = self._raw_get(raw, "message", [])
+        if not isinstance(raw_chain, list):
+            return []
+
+        image_urls = []
+        for segment in raw_chain:
+            if not isinstance(segment, dict) or segment.get("type") != "image":
+                continue
+            data = segment.get("data") or {}
+            if not isinstance(data, dict):
+                continue
+            image_ref = data.get("url") or data.get("file")
+            if image_ref:
+                image_urls.append(str(image_ref))
+        return self._dedupe_keep_order(image_urls)
+
+    @staticmethod
+    def _build_raw_message_segments(text: str, image_urls: List[str]) -> List[dict]:
+        segments = []
+        if text:
+            segments.append({"type": "text", "data": {"text": text}})
+        for url in image_urls or []:
+            if url:
+                segments.append(
+                    {"type": "image", "data": {"file": url, "url": url}}
+                )
+        return segments
+
+    @staticmethod
+    def _build_raw_message_text(text: str, image_urls: List[str]) -> str:
+        parts = [text] if text else []
+        parts.extend(
+            f"[CQ:image,file={url},url={url}]"
+            for url in (image_urls or [])
+            if url
+        )
+        return "".join(parts)
+
+    def _sync_raw_message(
+        self,
+        event: AstrMessageEvent,
+        text: str,
+        image_urls: List[str],
+    ):
+        message_obj = getattr(event, "message_obj", None)
+        raw = getattr(message_obj, "raw_message", None)
+        if raw is None:
+            return
+
+        raw_segments = self._build_raw_message_segments(text, image_urls)
+        raw_text = self._build_raw_message_text(text, image_urls)
+        try:
+            raw["message"] = raw_segments
+            raw["raw_message"] = raw_text
+        except Exception:
+            try:
+                setattr(raw, "message", raw_segments)
+                setattr(raw, "raw_message", raw_text)
+            except Exception:
+                pass
+
     def is_command(self, message: str, prefixes: list) -> bool:
         """检查消息是否为指令"""
         message = message.strip()
@@ -442,19 +527,19 @@ class MessageParser:
             logger.error(f"[消息防抖动] 消息解析异常: {exc}")
 
         if self.enable_qq_card_parsing and card_urls:
-            # 去重并添加标识，便于LLM在整合消息中识别原始来源链接
-            deduped_links = []
-            seen = set()
-            for u in card_urls:
-                if u not in seen:
-                    seen.add(u)
-                    deduped_links.append(u)
+            deduped_links = self._dedupe_keep_order(card_urls)
             card_text = "\n".join(
-                self._append_prompt_line(self.qq_card_prompt, u) for u in deduped_links
+                self._append_prompt_line(self.qq_card_prompt, url)
+                for url in deduped_links
             )
-            text = (f"{text}\n{card_text}" if text else card_text)
+            text = f"{text}\n{card_text}" if text else card_text
 
-        return text, has_image, image_urls
+        raw_image_urls = self._extract_image_urls_from_raw_message(message_obj)
+        if raw_image_urls:
+            image_urls = raw_image_urls
+            has_image = True
+
+        return text, has_image, self._dedupe_keep_order(image_urls)
 
     def reconstruct_event(self, event: AstrMessageEvent, text: str, image_urls: List[str]):
         """
@@ -462,6 +547,14 @@ class MessageParser:
         这样事件可以继续传播给后续的插件/框架处理
         """
         event.message_str = text
+        if hasattr(event, "message_obj"):
+            try:
+                event.message_obj.message_str = text
+            except Exception:
+                pass
+
+        self._sync_raw_message(event, text, image_urls)
+
         if not self._PlainComponent:
             return
 

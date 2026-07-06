@@ -1,6 +1,6 @@
 import asyncio
 from typing import Dict
-from astrbot.api.star import Context, Star, register
+from astrbot.api.star import Context, Star
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api import AstrBotConfig, logger
 
@@ -12,15 +12,9 @@ from .link_parser_adapter import LinkParserAdapter
 if IS_AIOCQHTTP:
     from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
 
-@register(
-    "continuous_message",
-    "aliveriver",
-    "将用户短时间内发送的多条私聊消息合并成一条发送给LLM（仅私聊模式，支持合并转发消息、引用消息、输入状态感知）",
-    "2.5.0"
-)
 class ContinuousMessagePlugin(Star):
     """
-    消息防抖动插件 v2.5.0
+    消息防抖动插件 v2.6.0
     消息防抖动插件（仅私聊模式）
     
     功能：
@@ -39,7 +33,7 @@ class ContinuousMessagePlugin(Star):
     
     def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
-        self.config = config or {}
+        self.config = self._normalize_config(config or {})
         
         self.debounce_time = float(self.config.get('debounce_time', 2.0))
         self.command_prefixes = self.config.get('command_prefixes', ['/'])
@@ -86,12 +80,22 @@ class ContinuousMessagePlugin(Star):
         self.link_parser = LinkParserAdapter(self.config)
 
         logger.info(
-            f"[消息防抖动] v2.3.0 加载 | 事件驱动模式 | 防抖: {self.debounce_time}s "
+            f"[消息防抖动] v2.6.0 加载 | 事件驱动模式 | 防抖: {self.debounce_time}s "
             f"| 合并消息: {self.enable_forward_analysis} | 输入感知: {self.enable_typing_detection} "
             f"| 自适应防抖: {self.enable_adaptive_debounce}({self.adaptive_min_wait}-{self.adaptive_max_wait}s, 总上限{self.adaptive_max_total_wait}s) "
             f"| 撤回过滤: {self.enable_recall_filter} "
             f"| QQ卡片解析: {self.parser.enable_qq_card_parsing} | 链接解析: {self.link_parser.enabled}"
         )
+
+    @staticmethod
+    def _normalize_config(config: dict) -> dict:
+        """Flatten v4.26 nested schema config while keeping old flat keys usable."""
+        flat = dict(config or {})
+        for group in ("basic", "debounce", "message_features", "qq_card", "link_parser"):
+            value = config.get(group) if hasattr(config, "get") else None
+            if isinstance(value, dict):
+                flat.update(value)
+        return flat
 
     async def terminate(self):
         await self.link_parser.close()
@@ -113,6 +117,29 @@ class ContinuousMessagePlugin(Star):
     @staticmethod
     def _now() -> float:
         return asyncio.get_running_loop().time()
+
+    @staticmethod
+    def _silence_event(event: AstrMessageEvent) -> None:
+        event.should_call_llm(True)
+        try:
+            event.clear_result()
+        except Exception:
+            pass
+        try:
+            event._force_stopped = True
+        except Exception:
+            event.stop_event()
+            try:
+                event.clear_result()
+            except Exception:
+                pass
+
+    @staticmethod
+    def _is_private_message_event(event: AstrMessageEvent) -> bool:
+        try:
+            return event.is_private_chat()
+        except Exception:
+            return False
 
     def _is_short_message(self, text: str) -> bool:
         return len((text or "").strip()) <= self.adaptive_short_message_threshold
@@ -215,7 +242,7 @@ class ContinuousMessagePlugin(Star):
         parts = [labels.get(item, item) for item in (reason or "adaptive").split(",") if item]
         return "+".join(parts) if parts else labels["adaptive"]
 
-    @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE, priority=50)
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=50)
     async def handle_private_msg(self, event: AstrMessageEvent):
         if not self.enable_plugin or self.debounce_time <= 0:
             return
@@ -254,7 +281,7 @@ class ContinuousMessagePlugin(Star):
                         logger.info(f"[消息防抖动] 用户停止输入，恢复防抖 {self.debounce_time}s - 用户: {uid}")
                     else:
                         logger.debug(f"[消息防抖动] 忽略重复的停止输入通知 - 用户: {uid}")
-            event.stop_event()
+            self._silence_event(event)
             return
 
         # 0b. 撤回消息过滤：在防抖窗口内移除被撤回的消息
@@ -278,7 +305,7 @@ class ContinuousMessagePlugin(Star):
                         f"[消息防抖动] 已过滤撤回消息 | message_id: {recalled_mid} "
                         f"| 剩余 {after_count} 条 - 用户: {uid}"
                     )
-                    # 若队列已空，立即触发结算（结算阶段会 stop_event 阻止空消息）
+                    # 若队列已空，立即触发结算（结算阶段会 _silence_event 静默终止空消息）
                     if after_count == 0:
                         logger.info(f"[消息防抖动] 所有消息均已撤回，终止本次结算 - 用户: {uid}")
                         session['flush_event'].set()
@@ -286,7 +313,10 @@ class ContinuousMessagePlugin(Star):
                     logger.debug(
                         f"[消息防抖动] 收到撤回通知但未找到对应消息 | message_id: {recalled_mid} - 用户: {uid}"
                     )
-            event.stop_event()
+            self._silence_event(event)
+            return
+
+        if not self._is_private_message_event(event):
             return
 
         # 0. 检测并处理合并转发消息（仅aiocqhttp平台）
@@ -381,7 +411,7 @@ class ContinuousMessagePlugin(Star):
             )
             if raw_text:
                 logger.debug(f"[消息防抖动] 追加文本内容: {raw_text[:100]}{'...' if len(raw_text) > 100 else ''}")
-            event.stop_event()
+            self._silence_event(event)
             return
 
         # 场景 B: 启动新会话 (Msg 1)
@@ -439,7 +469,7 @@ class ContinuousMessagePlugin(Star):
         parsed_added_image_count = max(len(all_images) - original_image_count, 0)
         
         if not merged_text and not all_images:
-            event.stop_event()
+            self._silence_event(event)
             return
 
         img_info = f" + {len(all_images)}图" if all_images else ""
