@@ -523,6 +523,8 @@ class MessageParser:
                         image_urls.append(component.url)
                     elif hasattr(component, 'file') and component.file:
                         image_urls.append(component.file)
+                    elif hasattr(component, 'path') and component.path:
+                        image_urls.append(component.path)
         except Exception as exc:
             logger.error(f"[消息防抖动] 消息解析异常: {exc}")
 
@@ -535,7 +537,11 @@ class MessageParser:
             text = f"{text}\n{card_text}" if text else card_text
 
         raw_image_urls = self._extract_image_urls_from_raw_message(message_obj)
-        if raw_image_urls:
+        # AstrBot may have downloaded and normalized the image component during
+        # preprocessing (for example, converting GIF to JPEG). Preserve that
+        # provider-ready reference and only fall back to the raw platform URL
+        # when the component does not contain a usable image reference.
+        if raw_image_urls and not image_urls:
             image_urls = raw_image_urls
             has_image = True
 

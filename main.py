@@ -1,8 +1,11 @@
 import asyncio
+from pathlib import Path
 from typing import Dict
 from astrbot.api.star import Context, Star
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api import AstrBotConfig, logger
+from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
+from astrbot.core.utils.media_utils import MediaResolver, ensure_jpeg
 
 from .message_parser import MessageParser, IS_AIOCQHTTP
 from .forward_handler import ForwardHandler
@@ -467,6 +470,44 @@ class ContinuousMessagePlugin(Star):
         merged_text = self.merge_separator.join(buffer).strip()
         merged_text, all_images = await self.link_parser.enrich(merged_text, all_images)
         parsed_added_image_count = max(len(all_images) - original_image_count, 0)
+
+        # The plugin rebuilds the event after AstrBot's preprocess stage. Run
+        # image normalization again so raw GIFs from replies, forwards, or link
+        # parsing cannot bypass the core GIF-to-JPEG conversion.
+        normalized_images = []
+        for image_ref in all_images:
+            try:
+                local_path = await MediaResolver(
+                    image_ref,
+                    media_type="image",
+                    default_suffix=".bin",
+                ).to_path()
+                try:
+                    resolved_local_path = Path(local_path).resolve()
+                    resolved_local_path.relative_to(
+                        Path(get_astrbot_temp_path()).resolve()
+                    )
+                    event.track_temporary_local_file(str(resolved_local_path))
+                except (OSError, ValueError):
+                    pass
+
+                jpeg_path = await ensure_jpeg(local_path)
+                try:
+                    resolved_jpeg_path = Path(jpeg_path).resolve()
+                    resolved_jpeg_path.relative_to(
+                        Path(get_astrbot_temp_path()).resolve()
+                    )
+                    event.track_temporary_local_file(str(resolved_jpeg_path))
+                except (OSError, ValueError):
+                    pass
+
+                if jpeg_path not in normalized_images:
+                    normalized_images.append(jpeg_path)
+            except Exception as exc:
+                logger.warning(
+                    f"[消息防抖动] 图片标准化失败，已忽略该图片: {exc}"
+                )
+        all_images = normalized_images
         
         if not merged_text and not all_images:
             self._silence_event(event)
