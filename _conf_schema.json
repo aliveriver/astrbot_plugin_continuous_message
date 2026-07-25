@@ -142,6 +142,51 @@
       }
     }
   },
+  "image_handling": {
+    "description": "图片处理",
+    "type": "object",
+    "hint": "控制合并消息重构前的图片本地化、缓存清理和 GIF 兼容处理。",
+    "obvious_hint": true,
+    "items": {
+      "enable_image_localization": {
+        "description": "启用图片本地化",
+        "type": "bool",
+        "default": false,
+        "hint": "发送合并消息前，先将 HTTP/HTTPS 图片下载到插件本地缓存，并优先使用 Image.fromFileSystem 构造图片组件。下载失败时会自动回退原始 URL。",
+        "obvious_hint": true
+      },
+      "image_localization_dir": {
+        "description": "图片本地缓存目录",
+        "type": "string",
+        "default": "data/localized_images",
+        "hint": "保存本地化图片的目录。相对路径会基于插件目录解析。"
+      },
+      "image_localization_timeout": {
+        "description": "图片下载超时时间（秒）",
+        "type": "float",
+        "default": 10.0,
+        "hint": "单次图片本地化流程允许的总下载时间。超时后对应图片会回退原始 URL。"
+      },
+      "image_localization_max_bytes": {
+        "description": "单张图片最大字节数",
+        "type": "int",
+        "default": 20971520,
+        "hint": "允许下载的单张图片最大体积。超过该大小会停止下载并回退原始 URL。"
+      },
+      "image_localization_cleanup_max_age_hours": {
+        "description": "缓存清理时间（小时）",
+        "type": "float",
+        "default": 24.0,
+        "hint": "插件启动和每次图片本地化前，会删除超过该小时数的本地图片缓存。设为 0 或负数可关闭清理。"
+      },
+      "image_localization_convert_gif_to_jpg": {
+        "description": "GIF 转 JPG 第一帧",
+        "type": "bool",
+        "default": true,
+        "hint": "将本地化后的 GIF 转换为第一帧 JPG 后再传给 VLM，降低不同模型或提供方对动图支持不一致造成的问题。"
+      }
+    }
+  },
   "link_parser": {
     "description": "链接解析增强",
     "type": "object",

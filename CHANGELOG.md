@@ -1,12 +1,28 @@
 ﻿# 更新日志
 
+## v2.7.0
+
+### 新增
+
+- 新增可选图片本地化配置组 `image_handling`，可将远程图片 URL 下载到本地缓存后通过 `Image.fromFileSystem` 交回 AstrBot。
+- 新增本地化图片缓存自动清理，可按 `image_localization_cleanup_max_age_hours` 删除过期文件。
+- 新增 GIF 第一帧转 JPG 选项，降低不同 VLM/provider 对动图支持不一致造成的问题。
+
+### 改进
+
+- 图片本地化逻辑拆分到 `image_localizer.py`，减少主流程代码体积。
+
+### 兼容性
+
+- GIF 转 JPG 依赖 `Pillow`，若运行环境缺少该依赖，会保留原 GIF 并继续后续流程。
+
 ## v2.6.0
 
 ### 新增
 
 - 新增自适应防抖策略，可根据消息长度、结尾标点和连续短句数量动态调整等待时间。
 - 新增单轮最长总等待时间，避免用户持续补充消息时无限延后结算。
-- 配置文件改为 AstrBot v4.26 推荐的嵌套分组写法：`basic`、`debounce`、`message_features`、`qq_card`、`link_parser`。
+- 配置文件改为 AstrBot v4.26 推荐的嵌套分组写法：`basic`、`debounce`、`message_features`、`qq_card`、`image_handling`、`link_parser`。
 
 ### 改进
 

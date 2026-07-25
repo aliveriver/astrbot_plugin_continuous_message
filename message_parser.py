@@ -4,6 +4,7 @@
 负责消息内容的解析、图片提取、事件重构和输入状态检测。
 """
 import json
+import os
 import re
 from urllib.parse import parse_qs, urlparse
 from typing import List, Tuple
@@ -358,21 +359,24 @@ class MessageParser:
         segments = []
         if text:
             segments.append({"type": "text", "data": {"text": text}})
-        for url in image_urls or []:
-            if url:
-                segments.append(
-                    {"type": "image", "data": {"file": url, "url": url}}
-                )
+        for image_ref in image_urls or []:
+            if image_ref:
+                data = {"file": image_ref}
+                if str(image_ref).startswith(("http://", "https://")):
+                    data["url"] = image_ref
+                segments.append({"type": "image", "data": data})
         return segments
 
     @staticmethod
     def _build_raw_message_text(text: str, image_urls: List[str]) -> str:
         parts = [text] if text else []
-        parts.extend(
-            f"[CQ:image,file={url},url={url}]"
-            for url in (image_urls or [])
-            if url
-        )
+        for image_ref in image_urls or []:
+            if not image_ref:
+                continue
+            if str(image_ref).startswith(("http://", "https://")):
+                parts.append(f"[CQ:image,file={image_ref},url={image_ref}]")
+            else:
+                parts.append(f"[CQ:image,file={image_ref}]")
         return "".join(parts)
 
     def _sync_raw_message(
@@ -541,7 +545,40 @@ class MessageParser:
 
         return text, has_image, self._dedupe_keep_order(image_urls)
 
-    def reconstruct_event(self, event: AstrMessageEvent, text: str, image_urls: List[str]):
+    def _build_image_component(self, image_ref: str, prefer_filesystem: bool = False):
+        if not self._ImageComponent or not image_ref:
+            return None
+
+        if (
+            prefer_filesystem
+            and os.path.isfile(image_ref)
+            and hasattr(self._ImageComponent, "fromFileSystem")
+        ):
+            try:
+                return self._ImageComponent.fromFileSystem(image_ref)
+            except Exception as exc:
+                logger.warning(f"[消息防抖动] Image.fromFileSystem 构造失败，回退普通 Image: {exc}")
+
+        if self._SCHEME_PATTERN.match(image_ref) and hasattr(self._ImageComponent, "fromURL"):
+            try:
+                return self._ImageComponent.fromURL(image_ref)
+            except Exception:
+                pass
+
+        try:
+            return self._ImageComponent(file=image_ref)
+        except TypeError:
+            return self._ImageComponent(url=image_ref)
+        except Exception:
+            return None
+
+    def reconstruct_event(
+        self,
+        event: AstrMessageEvent,
+        text: str,
+        image_urls: List[str],
+        prefer_filesystem_images: bool = False,
+    ):
         """
         重构消息事件，将合并后的文本和图片重新组装到事件对象中
         这样事件可以继续传播给后续的插件/框架处理
@@ -565,13 +602,13 @@ class MessageParser:
         
         # 添加图片组件（兼容不同的 Image 构造函数参数）
         if image_urls and self._ImageComponent:
-            for url in image_urls:
-                try:
-                    chain.append(self._ImageComponent(file=url))
-                except TypeError:
-                    chain.append(self._ImageComponent(url=url))
-                except Exception:
-                    pass
+            for image_ref in image_urls:
+                image_component = self._build_image_component(
+                    image_ref,
+                    prefer_filesystem=prefer_filesystem_images,
+                )
+                if image_component:
+                    chain.append(image_component)
         
         # 更新事件的消息对象
         if hasattr(event.message_obj, "message"):

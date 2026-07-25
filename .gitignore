@@ -3,6 +3,9 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# Runtime image cache
+data/localized_images/
+
 # C extensions
 *.so
 

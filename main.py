@@ -1,11 +1,14 @@
 import asyncio
+from pathlib import Path
 from typing import Dict
+
 from astrbot.api.star import Context, Star
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api import AstrBotConfig, logger
 
 from .message_parser import MessageParser, IS_AIOCQHTTP
 from .forward_handler import ForwardHandler
+from .image_localizer import ImageLocalizer
 from .link_parser_adapter import LinkParserAdapter
 
 # 检查是否为 aiocqhttp 平台
@@ -14,7 +17,7 @@ if IS_AIOCQHTTP:
 
 class ContinuousMessagePlugin(Star):
     """
-    消息防抖动插件 v2.6.0
+    消息防抖动插件 v2.7.0
     消息防抖动插件（仅私聊模式）
     
     功能：
@@ -49,6 +52,10 @@ class ContinuousMessagePlugin(Star):
         self.adaptive_max_wait = float(self.config.get('adaptive_max_wait', 6.0))
         self.adaptive_max_total_wait = float(self.config.get('adaptive_max_total_wait', 12.0))
         self.adaptive_short_message_threshold = int(self.config.get('adaptive_short_message_threshold', 10))
+        self.image_localizer = ImageLocalizer.from_config(
+            self.config,
+            Path(__file__).resolve().parent,
+        )
 
         # 引用消息配置（sender 属性已标明发送者，LLM 可自行推断角色，无需额外 hint）
         reply_format = '<quoted_message sender="{sender_name}">{full_text}</quoted_message>'
@@ -78,20 +85,22 @@ class ContinuousMessagePlugin(Star):
         )
         self.forward_handler = ForwardHandler(reply_format=reply_format)
         self.link_parser = LinkParserAdapter(self.config)
+        self.image_localizer.cleanup()
 
         logger.info(
-            f"[消息防抖动] v2.6.0 加载 | 事件驱动模式 | 防抖: {self.debounce_time}s "
+            f"[消息防抖动] v2.7.0 加载 | 事件驱动模式 | 防抖: {self.debounce_time}s "
             f"| 合并消息: {self.enable_forward_analysis} | 输入感知: {self.enable_typing_detection} "
             f"| 自适应防抖: {self.enable_adaptive_debounce}({self.adaptive_min_wait}-{self.adaptive_max_wait}s, 总上限{self.adaptive_max_total_wait}s) "
             f"| 撤回过滤: {self.enable_recall_filter} "
             f"| QQ卡片解析: {self.parser.enable_qq_card_parsing} | 链接解析: {self.link_parser.enabled}"
+            f"| 图片本地化: {self.image_localizer.enabled}"
         )
 
     @staticmethod
     def _normalize_config(config: dict) -> dict:
         """Flatten v4.26 nested schema config while keeping old flat keys usable."""
         flat = dict(config or {})
-        for group in ("basic", "debounce", "message_features", "qq_card", "link_parser"):
+        for group in ("basic", "debounce", "message_features", "qq_card", "link_parser", "image_handling"):
             value = config.get(group) if hasattr(config, "get") else None
             if isinstance(value, dict):
                 flat.update(value)
@@ -467,6 +476,7 @@ class ContinuousMessagePlugin(Star):
         merged_text = self.merge_separator.join(buffer).strip()
         merged_text, all_images = await self.link_parser.enrich(merged_text, all_images)
         parsed_added_image_count = max(len(all_images) - original_image_count, 0)
+        all_images = await self.image_localizer.localize(all_images)
         
         if not merged_text and not all_images:
             self._silence_event(event)
@@ -481,5 +491,10 @@ class ContinuousMessagePlugin(Star):
         if all_images:
             logger.debug(f"[消息防抖动] 图片列表: {all_images}")
         
-        self.parser.reconstruct_event(event, merged_text, all_images)
+        self.parser.reconstruct_event(
+            event,
+            merged_text,
+            all_images,
+            prefer_filesystem_images=self.image_localizer.enabled,
+        )
         return
