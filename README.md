@@ -1,12 +1,14 @@
-# AstrBot 消息防抖动插件 v2.6.0
+# AstrBot 消息防抖动插件 v2.7.0
 
 ## 简介
 
 消息防抖动插件可以将用户短时间内发送的多条私聊消息合并成一条发送给大语言模型（LLM），避免频繁触发AI回复，提升用户体验。
 
-**v2.6.0 更新**：
+**v2.7.0 更新**：
 
-  新增自适应防抖，不依赖 input_status 的自适应防抖 fallback。来自 6TBWhite 的PR。
+* v2.6 当前主要以图片 URL/重构 Image 组件的方式把图片重新交回 AstrBot。插件侧能正确收集图片，但不同 VLM/provider 对这条图片转述链路的兼容性不同。
+* 某些 provider 下，AstrBot 虽然进入图片 caption 流程并生成了临时压缩文件，但模型最终仍返回“[转述组件没有收到图片]”，说明图片没有作为有效视觉输入进入 VLM。
+* 推荐用户换稳定 caption provider；插件提供了从 URL 透传改成“本地化 + Image.fromFileSystem”的可选功能
 
 
 ## 功能特性
@@ -101,6 +103,17 @@
 | `enable_qq_card_parsing` | bool | `true` | 从 QQ json 卡片中提取原始链接，并追加到合并消息里。 |
 | `qq_card_disabled_platforms` | list | `[]` | 禁用指定平台的 QQ 卡片解析。可选：`bilibili`、`xhs`、`xiaoheihe`、`tieba`、`nga`、`ncm`、`zhihu`。 |
 | `qq_card_prompt` | string | `[卡片链接]` | 每条卡片链接前附加的引导词，留空则只输出链接本身。 |
+
+### 图片处理（image_handling）
+
+| 配置项 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `enable_image_localization` | bool | `false` | 启用图片本地化。开启后会先将 HTTP/HTTPS 图片下载到插件本地缓存，再优先使用 `Image.fromFileSystem` 重构图片组件；下载失败会回退原始 URL。 |
+| `image_localization_dir` | string | `data/localized_images` | 图片本地缓存目录。相对路径会基于插件目录解析。 |
+| `image_localization_timeout` | float | `10.0` | 图片本地化下载超时时间，超时后对应图片回退原始 URL。 |
+| `image_localization_max_bytes` | int | `20971520` | 单张图片允许下载的最大字节数，默认 20 MiB。 |
+| `image_localization_cleanup_max_age_hours` | float | `24.0` | 插件启动和每次图片本地化前，清理超过该小时数的缓存文件。设为 `0` 或负数可关闭清理。 |
+| `image_localization_convert_gif_to_jpg` | bool | `true` | 将本地化后的 GIF 转换为第一帧 JPG 后再传给 VLM，降低不同模型或提供方对动图支持不一致造成的问题。 |
 
 ### 链接解析增强（link_parser）
 
@@ -365,6 +378,9 @@
 ### 图片与链接
 
 - 图片能否被真正理解取决于当前 AstrBot 使用的 LLM 是否支持视觉能力。非 VLM 模型可能会在核心层移除图片后仅保留文本重试。
+- 如果遇到部分 VLM/provider 无法正确处理远程图片 URL，可开启 `image_handling.enable_image_localization`，让插件先把图片落地到本地缓存，再通过 `Image.fromFileSystem` 交回 AstrBot。
+- 本地化图片会保存在 `image_handling.image_localization_dir` 中，并按 `image_localization_cleanup_max_age_hours` 自动清理过期缓存。
+- 动态 GIF 在不同 VLM/provider 中兼容性不稳定；默认会在本地化后抽取第一帧转为 JPG，可通过 `image_localization_convert_gif_to_jpg` 关闭。
 - 链接解析会增加网络请求和等待时间。解析慢、失败率高或某个平台不需要解析时，可以调低 `link_parser_max_links`、缩短 `link_parser_timeout`，或把平台加入禁用列表。
 - 如果解析目标站点需要代理，在 `link_parser.link_parser_proxy` 中填写 HTTP/HTTPS 代理地址。
 
@@ -398,6 +414,7 @@ MIT License
 astrbot_plugin_continuous_message/
 ├── main.py              # 插件入口，防抖核心逻辑和输入状态流程
 ├── message_parser.py    # 消息解析、图片提取、事件重构、输入状态检测
+├── image_localizer.py   # 图片 URL 本地化、本地缓存清理、GIF 第一帧转换
 ├── forward_handler.py   # 合并转发检测、引用消息提取、原始内容解析
 ├── _conf_schema.json    # 插件配置 Schema
 ├── metadata.yaml        # 插件元数据
