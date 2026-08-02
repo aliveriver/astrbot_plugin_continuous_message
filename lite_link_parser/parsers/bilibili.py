@@ -25,6 +25,20 @@ class BilibiliLiteParser(BaseLiteParser):
                 "Origin": "https://www.bilibili.com",
             }
         )
+
+        # --- 新增：支持从 bilibili_cookies.txt 读取普通字符串 ---
+        cookie_str = self.site_config.get("cookies", "")
+        if not cookie_str:
+            cookie_dir = self.ensure_cookie_dir(self.config.get("cookie_dir", "data/cookies"))
+            cookie_file = cookie_dir / "bilibili_cookies.txt"
+            if cookie_file.exists():
+                try:
+                    with open(cookie_file, "r", encoding="utf-8") as f:
+                        cookie_str = f.read().strip()
+                except Exception as e:
+                    pass
+        # --------------------------------------------------------
+        
         self.credential = self._build_credential(self.site_config.get("cookies", ""))
 
     @handle("b23.tv", r"b23\.tv/[A-Za-z\d\._?%&+\-=/#]+")

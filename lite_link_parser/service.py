@@ -11,6 +11,9 @@ from .parsers import (
     NCMLiteParser,
     XiaoheiheLiteParser,
     XHSLiteParser,
+    LofterLiteParser,
+    QQMusicLiteParser,
+    ZhihuLiteParser,
 )
 
 
@@ -37,6 +40,9 @@ class LiteLinkParserService:
             NCMLiteParser,
             XiaoheiheLiteParser,
             XHSLiteParser,
+            LofterLiteParser,
+            QQMusicLiteParser,
+            ZhihuLiteParser,
         ]
         for parser_cls in supported:
             site_config = self.config["sites"].get(parser_cls.platform.name, {})

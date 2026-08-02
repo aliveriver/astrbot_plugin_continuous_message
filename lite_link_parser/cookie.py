@@ -128,8 +128,23 @@ class CookieJar:
         try:
             jar.load(ignore_discard=True, ignore_expires=True)
         except Exception:
+            # ---- 新增容错逻辑：发现不是标准格式，尝试作为普通字符串读取 ----
+            try:
+                with open(self.cookie_file, "r", encoding="utf-8") as f:
+                    raw_text = f.read().strip()
+                if raw_text and not raw_text.startswith("# Netscape"):
+                    # 使用类内置的方法解析普通字符串
+                    self._load_from_cookies_str(raw_text)
+                    # 解析完后，自动帮你转换并保存为标准的 Netscape 格式文件
+                    self.save_to_file()
+                    logger.info(f"[link_parser] 成功将普通字符串 Cookie 转换为标准格式: {self.cookie_file}")
+                    return
+            except Exception:
+                pass
+            # -------------------------------------------------------------
             logger.warning(f"[link_parser] failed to load cookies: {self.cookie_file}")
             return
+
         self.cookies = [
             Cookie(
                 domain=item.domain,
