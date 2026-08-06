@@ -63,11 +63,16 @@ class IDAccessControl:
         if self.blacklist_mode == "none" and not (self.enable_id_white_list and self.id_whitelist):
             return MODE_DEBOUNCE
 
-        candidates = {
-            str(event.get_sender_id() or "").strip(),
-            str(event.get_session_id() or "").strip(),
-            event.unified_msg_origin,
-        }
+        try:
+            candidates = {
+                str(event.get_sender_id() or "").strip(),
+                str(event.get_session_id() or "").strip(),
+                event.unified_msg_origin,
+            }
+        except Exception as exc:
+            # 名单判断失败时放行，避免平台事件差异导致消息处理中断
+            logger.warning(f"[消息防抖动] 读取事件 ID 失败，按不限制处理: {exc}")
+            return MODE_DEBOUNCE
         candidates.discard("")
 
         if self.blacklist_mode != "none" and self.id_blacklist and candidates & self.id_blacklist:

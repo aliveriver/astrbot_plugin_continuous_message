@@ -116,9 +116,16 @@ class ContinuousMessagePlugin(Star):
         """对最终消息执行链接解析、图片本地化与事件重构。"""
         original_image_count = len(images)
         merged_text = self.merge_separator.join(buffer).strip()
-        merged_text, all_images = await self.link_parser.enrich(merged_text, images)
+        try:
+            merged_text, all_images = await self.link_parser.enrich(merged_text, images)
+        except Exception as exc:
+            logger.error(f"[消息防抖动] 链接解析异常，回退原始消息: {exc}")
+            all_images = list(images)
         parsed_added_image_count = max(len(all_images) - original_image_count, 0)
-        all_images = await self.image_localizer.localize(all_images)
+        try:
+            all_images = await self.image_localizer.localize(all_images)
+        except Exception as exc:
+            logger.error(f"[消息防抖动] 图片本地化异常，回退原始图片: {exc}")
 
         if not merged_text and not all_images:
             self._silence_event(event)
