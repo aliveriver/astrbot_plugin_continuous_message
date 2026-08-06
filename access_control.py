@@ -34,7 +34,7 @@ class IDAccessControl:
             # 兼容早期版本的黑名单模式命名
             self.blacklist_mode = "disable"
         elif config.get("enable_id_black_list", False):
-            # 旧版配置兼容：显式开启黑名单时等价于 immediate
+            # 兼容早期 fork 版本配置：显式开启 enable_id_black_list 时等价于 immediate
             self.blacklist_mode = "immediate"
         else:
             self.blacklist_mode = "disable"
