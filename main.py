@@ -10,7 +10,7 @@ from .message_parser import MessageParser, IS_AIOCQHTTP
 from .forward_handler import ForwardHandler
 from .image_localizer import ImageLocalizer
 from .link_parser_adapter import LinkParserAdapter
-from .access_control import IDAccessControl
+from .access_control import IDAccessControl, MODE_DENY, MODE_IMMEDIATE
 
 # 检查是否为 aiocqhttp 平台
 if IS_AIOCQHTTP:
@@ -111,6 +111,34 @@ class ContinuousMessagePlugin(Star):
 
     async def terminate(self):
         await self.link_parser.close()
+
+    async def _finalize_merged(self, event: AstrMessageEvent, buffer: list, images: list):
+        """对最终消息执行链接解析、图片本地化与事件重构。"""
+        original_image_count = len(images)
+        merged_text = self.merge_separator.join(buffer).strip()
+        merged_text, all_images = await self.link_parser.enrich(merged_text, images)
+        parsed_added_image_count = max(len(all_images) - original_image_count, 0)
+        all_images = await self.image_localizer.localize(all_images)
+
+        if not merged_text and not all_images:
+            self._silence_event(event)
+            return
+
+        img_info = f" + {len(all_images)}图" if all_images else ""
+        logger.info(f"[消息防抖动] 结算触发 - 共 {len(buffer)} 条{img_info} -> 发送")
+        logger.info(
+            f"[消息防抖动] 图片统计 | 原图数量: {original_image_count} | 解析追加图数量: {parsed_added_image_count}"
+        )
+        logger.debug(f"[消息防抖动] 合并后的完整消息:\n{merged_text}")
+        if all_images:
+            logger.debug(f"[消息防抖动] 图片列表: {all_images}")
+
+        self.parser.reconstruct_event(
+            event,
+            merged_text,
+            all_images,
+            prefer_filesystem_images=self.image_localizer.enabled,
+        )
 
     async def _timer_coroutine(self, uid: str, duration: float):
         """
@@ -331,8 +359,9 @@ class ContinuousMessagePlugin(Star):
         if not self._is_private_message_event(event):
             return
 
-        # 0. ID 黑/白名单检查：未命中的会话直接放行，不参与防抖合并
-        if not self.access_control.is_allowed(event):
+        # 0. ID 黑/白名单检查：白名单未命中直接放行；黑名单命中走立即处理分支
+        access_mode = self.access_control.get_mode(event)
+        if access_mode == MODE_DENY:
             return
 
         # 0. 检测并处理合并转发消息（仅aiocqhttp平台）
@@ -379,6 +408,16 @@ class ContinuousMessagePlugin(Star):
 
         # 3. 忽略空消息
         if not raw_text and not has_image:
+            return
+
+        # 3.5 黑名单用户：不参与防抖合并，收到后立即处理，其余功能照常生效
+        if access_mode == MODE_IMMEDIATE:
+            logger.info(f"[消息防抖动] 黑名单用户立即发送（防抖 0s） - 用户: {uid}")
+            await self._finalize_merged(
+                event,
+                [raw_text] if raw_text else [],
+                list(current_urls),
+            )
             return
 
         # ================== 核心防抖逻辑 ==================
@@ -476,32 +515,5 @@ class ContinuousMessagePlugin(Star):
         if uid not in self.sessions:
             return
         session_data = self.sessions.pop(uid)
-        
-        buffer = session_data['buffer']
-        all_images = session_data['images']
-        original_image_count = len(all_images)
-        merged_text = self.merge_separator.join(buffer).strip()
-        merged_text, all_images = await self.link_parser.enrich(merged_text, all_images)
-        parsed_added_image_count = max(len(all_images) - original_image_count, 0)
-        all_images = await self.image_localizer.localize(all_images)
-        
-        if not merged_text and not all_images:
-            self._silence_event(event)
-            return
-
-        img_info = f" + {len(all_images)}图" if all_images else ""
-        logger.info(f"[消息防抖动] 结算触发 - 共 {len(buffer)} 条{img_info} -> 发送")
-        logger.info(
-            f"[消息防抖动] 图片统计 | 原图数量: {original_image_count} | 解析追加图数量: {parsed_added_image_count}"
-        )
-        logger.debug(f"[消息防抖动] 合并后的完整消息:\n{merged_text}")
-        if all_images:
-            logger.debug(f"[消息防抖动] 图片列表: {all_images}")
-        
-        self.parser.reconstruct_event(
-            event,
-            merged_text,
-            all_images,
-            prefer_filesystem_images=self.image_localizer.enabled,
-        )
+        await self._finalize_merged(event, session_data['buffer'], session_data['images'])
         return

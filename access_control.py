@@ -5,6 +5,10 @@ from typing import Any, Iterable, Set
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 
+MODE_DEBOUNCE = "debounce"
+MODE_IMMEDIATE = "immediate"
+MODE_DENY = "deny"
+
 
 class IDAccessControl:
     """基于发送者 ID、会话 ID 或 unified_msg_origin 的黑/白名单过滤。
@@ -12,6 +16,11 @@ class IDAccessControl:
     配置键名沿用 livingmemory 的白名单命名（enable_id_white_list / id_whitelist），
     并对称提供黑名单（enable_id_black_list / id_blacklist）。
     黑名单优先于白名单；名单为空时视为未启用，不过滤任何用户。
+
+    三种处理模式：
+    - debounce：正常参与防抖合并。
+    - immediate：不合并等待，收到后立即处理（黑名单命中）。
+    - deny：完全不处理，直接放行（白名单未命中）。
     """
 
     def __init__(self, config: dict):
@@ -39,13 +48,13 @@ class IDAccessControl:
             parts.append(f"黑名单×{len(self.id_blacklist)}")
         return "+".join(parts) if parts else "关闭"
 
-    def is_allowed(self, event: AstrMessageEvent) -> bool:
-        """判断该会话是否允许参与防抖合并。
+    def get_mode(self, event: AstrMessageEvent) -> str:
+        """判断该会话的处理模式。
 
         匹配字段为发送者 ID、会话 ID 与 unified_msg_origin，任一命中即算名单命中。
         """
         if not self.enable_id_white_list and not self.enable_id_black_list:
-            return True
+            return MODE_DEBOUNCE
 
         candidates = {
             str(event.get_sender_id() or "").strip(),
@@ -55,11 +64,11 @@ class IDAccessControl:
         candidates.discard("")
 
         if self.enable_id_black_list and self.id_blacklist and candidates & self.id_blacklist:
-            logger.info(f"[消息防抖动] ID 命中黑名单，跳过防抖合并 - 用户: {event.unified_msg_origin}")
-            return False
+            logger.info(f"[消息防抖动] ID 命中黑名单，立即处理（不合并） - 用户: {event.unified_msg_origin}")
+            return MODE_IMMEDIATE
 
         if self.enable_id_white_list and self.id_whitelist and not (candidates & self.id_whitelist):
             logger.info(f"[消息防抖动] ID 不在白名单中，跳过防抖合并 - 用户: {event.unified_msg_origin}")
-            return False
+            return MODE_DENY
 
-        return True
+        return MODE_DEBOUNCE
