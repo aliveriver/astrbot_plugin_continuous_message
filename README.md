@@ -6,7 +6,7 @@
 
 **v2.8.0 更新**：
 
-* 新增 ID 黑/白名单配置组 `access_control`，可控制哪些用户的消息参与防抖合并，未命中的用户消息不会被插件拦截。
+* 新增 ID 黑/白名单配置组 `access_control`：白名单限定参与合并的用户；黑名单支持不合并立即处理（`immediate`）或完全跳过（`skip`）两种模式。
 
 **v2.7.0 更新**：
 
@@ -32,7 +32,7 @@
 **低优先级设计**：优先级 50，不干扰其他插件的正常运行  
 **输入状态感知（NapCat等平台）**：检测用户正在打字时暂停结算（移动端QQ输入框非空），停止打字或退出当前聊天界面后恢复倒计时。目前经测试，只有移动端QQ会触发输入状态感知，PC端QQ目前无法实现输入状态感知。
 **自适应防抖**：根据消息长度、聊天输入信号和连续短句动态调整下一轮等待时间。
-**ID 黑白名单**：通过白名单或黑名单控制哪些用户的消息参与防抖合并，未命中的用户消息不会被拦截。
+**ID 黑白名单**：白名单限定仅指定用户参与合并；黑名单可选择不合并立即处理或完全跳过插件。
 
 ## 使用场景
 
@@ -430,6 +430,7 @@ MIT License
 astrbot_plugin_continuous_message/
 ├── main.py              # 插件入口，防抖核心逻辑和输入状态流程
 ├── message_parser.py    # 消息解析、图片提取、事件重构、输入状态检测
+├── access_control.py    # ID 黑/白名单访问控制
 ├── image_localizer.py   # 图片 URL 本地化、本地缓存清理、GIF 第一帧转换
 ├── forward_handler.py   # 合并转发检测、引用消息提取、原始内容解析
 ├── _conf_schema.json    # 插件配置 Schema
@@ -438,6 +439,10 @@ astrbot_plugin_continuous_message/
 ```
 
 ## 版本历史
+
+### v2.8.0 - ID 黑/白名单访问控制
+- 新增 `access_control` 配置组：白名单（`enable_id_white_list` / `id_whitelist`）限定参与合并的用户
+- 黑名单三档模式（`blacklist_mode`）：`disable` 不限制、`immediate` 不合并立即处理、`skip` 完全跳过插件
 
 ### v2.5.0 - XML 标签包裹元信息
 - 引用消息、合并转发内容统一改为 XML 标签包裹（`<quoted_message>`、`<forward_content>`），边界更清晰，降低 LLM 误解析风险
