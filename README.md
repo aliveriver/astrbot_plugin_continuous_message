@@ -1,8 +1,12 @@
-# AstrBot 消息防抖动插件 v2.7.0
+# AstrBot 消息防抖动插件 v2.8.0
 
 ## 简介
 
 消息防抖动插件可以将用户短时间内发送的多条私聊消息合并成一条发送给大语言模型（LLM），避免频繁触发AI回复，提升用户体验。
+
+**v2.8.0 更新**：
+
+* 新增 ID 黑/白名单配置组 `access_control`：白名单限定参与合并的用户；黑名单支持不合并立即处理（`immediate`）或完全跳过（`skip`）两种模式。
 
 **v2.7.0 更新**：
 
@@ -28,6 +32,7 @@
 **低优先级设计**：优先级 50，不干扰其他插件的正常运行  
 **输入状态感知（NapCat等平台）**：检测用户正在打字时暂停结算（移动端QQ输入框非空），停止打字或退出当前聊天界面后恢复倒计时。目前经测试，只有移动端QQ会触发输入状态感知，PC端QQ目前无法实现输入状态感知。
 **自适应防抖**：根据消息长度、聊天输入信号和连续短句动态调整下一轮等待时间。
+**ID 黑白名单**：白名单限定仅指定用户参与合并；黑名单可选择不合并立即处理或完全跳过插件。
 
 ## 使用场景
 
@@ -66,6 +71,17 @@
 | `enable` | bool | `true` | 插件总开关。关闭后不再拦截、缓存或合并消息。 |
 | `command_prefixes` | list | `["/"]` | 指令前缀列表。以这些前缀开头的消息会被识别为命令，不进入合并队列。 |
 | `merge_separator` | string | `"\n"` | 多条文本消息合并时使用的分隔符，默认换行。 |
+
+### 访问控制（access_control）
+
+| 配置项 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `enable_id_white_list` | bool | `false` | 启用 ID 白名单。启用后仅白名单内的用户消息参与防抖合并；名单为空时不过滤任何用户。 |
+| `id_whitelist` | list | `[]` | 白名单 ID 列表。填写用户 ID（如 QQ 号），也支持完整的会话来源标识（如 `aiocqhttp:FriendMessage:123456789`）。 |
+| `blacklist_mode` | string | `disable` | 黑名单处理模式。`disable` 不限制，正常防抖合并；`immediate` 不合并等待，收到后立即处理（链接解析、图片本地化等功能仍生效）；`skip` 完全跳过本插件处理。 |
+| `id_blacklist` | list | `[]` | 黑名单 ID 列表。填写黑名单用户 ID（如 QQ 号），也支持完整的会话来源标识（如 `aiocqhttp:FriendMessage:123456789`）。 |
+
+黑名单优先级高于白名单：同一用户同时命中两者时，按黑名单处理。黑名单模式为 `immediate` 时消息不参与合并等待，收到后立即处理，链接解析、图片本地化等其余功能照常生效；为 `skip` 时完全跳过本插件。白名单未命中的用户消息不会被插件拦截，按正常流程交给 LLM 或其他插件。
 
 ### 防抖策略（debounce）
 
@@ -414,6 +430,7 @@ MIT License
 astrbot_plugin_continuous_message/
 ├── main.py              # 插件入口，防抖核心逻辑和输入状态流程
 ├── message_parser.py    # 消息解析、图片提取、事件重构、输入状态检测
+├── access_control.py    # ID 黑/白名单访问控制
 ├── image_localizer.py   # 图片 URL 本地化、本地缓存清理、GIF 第一帧转换
 ├── forward_handler.py   # 合并转发检测、引用消息提取、原始内容解析
 ├── _conf_schema.json    # 插件配置 Schema
@@ -422,6 +439,10 @@ astrbot_plugin_continuous_message/
 ```
 
 ## 版本历史
+
+### v2.8.0 - ID 黑/白名单访问控制
+- 新增 `access_control` 配置组：白名单（`enable_id_white_list` / `id_whitelist`）限定参与合并的用户
+- 黑名单三档模式（`blacklist_mode`）：`disable` 不限制、`immediate` 不合并立即处理、`skip` 完全跳过插件
 
 ### v2.5.0 - XML 标签包裹元信息
 - 引用消息、合并转发内容统一改为 XML 标签包裹（`<quoted_message>`、`<forward_content>`），边界更清晰，降低 LLM 误解析风险
