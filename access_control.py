@@ -1,0 +1,65 @@
+"""ID 黑/白名单访问控制模块。"""
+
+from typing import Any, Iterable, Set
+
+from astrbot.api import logger
+from astrbot.api.event import AstrMessageEvent
+
+
+class IDAccessControl:
+    """基于发送者 ID、会话 ID 或 unified_msg_origin 的黑/白名单过滤。
+
+    配置键名沿用 livingmemory 的白名单命名（enable_id_white_list / id_whitelist），
+    并对称提供黑名单（enable_id_black_list / id_blacklist）。
+    黑名单优先于白名单；名单为空时视为未启用，不过滤任何用户。
+    """
+
+    def __init__(self, config: dict):
+        self.enable_id_white_list = bool(config.get("enable_id_white_list", False))
+        self.id_whitelist = self._normalize_id_list(config.get("id_whitelist", []))
+        self.enable_id_black_list = bool(config.get("enable_id_black_list", False))
+        self.id_blacklist = self._normalize_id_list(config.get("id_blacklist", []))
+
+    @staticmethod
+    def _normalize_id_list(items: Iterable[Any]) -> Set[str]:
+        """将配置中的 ID 列表归一化为去除空白后的字符串集合，兼容数字/字符串混用。"""
+        result = set()
+        for item in items or []:
+            text = str(item).strip()
+            if text:
+                result.add(text)
+        return result
+
+    def describe(self) -> str:
+        """返回启动日志用的访问控制状态描述。"""
+        parts = []
+        if self.enable_id_white_list and self.id_whitelist:
+            parts.append(f"白名单×{len(self.id_whitelist)}")
+        if self.enable_id_black_list and self.id_blacklist:
+            parts.append(f"黑名单×{len(self.id_blacklist)}")
+        return "+".join(parts) if parts else "关闭"
+
+    def is_allowed(self, event: AstrMessageEvent) -> bool:
+        """判断该会话是否允许参与防抖合并。
+
+        匹配字段为发送者 ID、会话 ID 与 unified_msg_origin，任一命中即算名单命中。
+        """
+        if not self.enable_id_white_list and not self.enable_id_black_list:
+            return True
+
+        candidates = {
+            str(event.get_sender_id() or "").strip(),
+            str(event.get_session_id() or "").strip(),
+            event.unified_msg_origin,
+        }
+        candidates.discard("")
+
+        if self.enable_id_black_list and self.id_blacklist and candidates & self.id_blacklist:
+            logger.info(f"[消息防抖动] ID 命中黑名单，跳过防抖合并 - 用户: {event.unified_msg_origin}")
+            return False
+
+        if self.enable_id_white_list and self.id_whitelist and not (candidates & self.id_whitelist):
+            logger.info(f"[消息防抖动] ID 不在白名单中，跳过防抖合并 - 用户: {event.unified_msg_origin}")
+            return False
+
+        return True

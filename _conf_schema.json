@@ -27,6 +27,42 @@
       }
     }
   },
+  "access_control": {
+    "description": "访问控制",
+    "type": "object",
+    "hint": "通过 ID 黑/白名单控制哪些用户的消息参与防抖合并。未命中的用户消息不会被插件拦截，按正常流程交给 LLM 或其他插件处理。",
+    "obvious_hint": true,
+    "items": {
+      "enable_id_white_list": {
+        "description": "启用 ID 白名单",
+        "type": "bool",
+        "default": false,
+        "hint": "启用后仅白名单内的用户消息参与防抖合并。白名单为空时视为未启用，不过滤任何用户。",
+        "obvious_hint": true
+      },
+      "id_whitelist": {
+        "description": "白名单 ID 列表",
+        "type": "list",
+        "default": [],
+        "hint": "填写用户 ID（如 QQ 号），也支持填完整的会话来源标识（格式：平台:消息类型:会话ID，如 aiocqhttp:FriendMessage:123456789）。",
+        "invisible": false
+      },
+      "enable_id_black_list": {
+        "description": "启用 ID 黑名单",
+        "type": "bool",
+        "default": false,
+        "hint": "启用后黑名单内的用户消息不参与防抖合并，其余用户正常合并。黑名单为空时视为未启用。",
+        "obvious_hint": true
+      },
+      "id_blacklist": {
+        "description": "黑名单 ID 列表",
+        "type": "list",
+        "default": [],
+        "hint": "填写用户 ID（如 QQ 号），也支持填完整的会话来源标识（格式：平台:消息类型:会话ID）。",
+        "invisible": false
+      }
+    }
+  },
   "debounce": {
     "description": "防抖策略",
     "type": "object",
