@@ -14,7 +14,7 @@ class IDAccessControl:
     """基于发送者 ID、会话 ID 或 unified_msg_origin 的黑/白名单过滤。
 
     配置键名沿用 livingmemory 的白名单命名（enable_id_white_list / id_whitelist），
-    黑名单通过 blacklist_mode 选择处理方式（none / immediate / skip）。
+    黑名单通过 blacklist_mode 选择处理方式（disable / immediate / skip）。
     黑名单优先于白名单；名单为空时视为未启用，不过滤任何用户。
 
     三种处理模式：
@@ -28,13 +28,16 @@ class IDAccessControl:
         self.id_whitelist = self._normalize_id_list(config.get("id_whitelist", []))
         self.id_blacklist = self._normalize_id_list(config.get("id_blacklist", []))
         raw_mode = config.get("blacklist_mode")
-        if raw_mode in ("none", "immediate", "skip"):
+        if raw_mode in ("disable", "immediate", "skip"):
             self.blacklist_mode = raw_mode
+        elif raw_mode == "none":
+            # 兼容早期版本的黑名单模式命名
+            self.blacklist_mode = "disable"
         elif config.get("enable_id_black_list", False):
             # 旧版配置兼容：显式开启黑名单时等价于 immediate
             self.blacklist_mode = "immediate"
         else:
-            self.blacklist_mode = "none"
+            self.blacklist_mode = "disable"
 
     @staticmethod
     def _normalize_id_list(items: Iterable[Any]) -> Set[str]:
@@ -51,7 +54,7 @@ class IDAccessControl:
         parts = []
         if self.enable_id_white_list and self.id_whitelist:
             parts.append(f"白名单×{len(self.id_whitelist)}")
-        if self.blacklist_mode != "none" and self.id_blacklist:
+        if self.blacklist_mode != "disable" and self.id_blacklist:
             parts.append(f"黑名单×{len(self.id_blacklist)}({self.blacklist_mode})")
         return "+".join(parts) if parts else "关闭"
 
@@ -60,7 +63,7 @@ class IDAccessControl:
 
         匹配字段为发送者 ID、会话 ID 与 unified_msg_origin，任一命中即算名单命中。
         """
-        if self.blacklist_mode == "none" and not (self.enable_id_white_list and self.id_whitelist):
+        if self.blacklist_mode == "disable" and not (self.enable_id_white_list and self.id_whitelist):
             return MODE_DEBOUNCE
 
         try:
@@ -75,7 +78,7 @@ class IDAccessControl:
             return MODE_DEBOUNCE
         candidates.discard("")
 
-        if self.blacklist_mode != "none" and self.id_blacklist and candidates & self.id_blacklist:
+        if self.blacklist_mode != "disable" and self.id_blacklist and candidates & self.id_blacklist:
             if self.blacklist_mode == "skip":
                 logger.info(f"[消息防抖动] ID 命中黑名单，跳过插件处理 - 用户: {event.unified_msg_origin}")
                 return MODE_DENY

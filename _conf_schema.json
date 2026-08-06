@@ -50,9 +50,9 @@
       "blacklist_mode": {
         "description": "黑名单处理模式",
         "type": "string",
-        "options": ["none", "immediate", "skip"],
-        "default": "none",
-        "hint": "选择黑名单用户消息的处理方式：none 不限制，正常防抖合并；immediate 不合并等待，收到后立即处理（链接解析、图片本地化等功能仍生效）；skip 完全跳过本插件处理，消息直接放行。",
+        "options": ["disable", "immediate", "skip"],
+        "default": "disable",
+        "hint": "选择黑名单用户消息的处理方式：disable 不限制，正常防抖合并；immediate 不合并等待，收到后立即处理（链接解析、图片本地化等功能仍生效）；skip 完全跳过本插件处理，消息直接放行。",
         "obvious_hint": true
       },
       "id_blacklist": {
