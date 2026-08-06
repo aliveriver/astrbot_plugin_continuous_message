@@ -27,16 +27,8 @@ class IDAccessControl:
         self.enable_id_white_list = bool(config.get("enable_id_white_list", False))
         self.id_whitelist = self._normalize_id_list(config.get("id_whitelist", []))
         self.id_blacklist = self._normalize_id_list(config.get("id_blacklist", []))
-        raw_mode = config.get("blacklist_mode")
-        if raw_mode in ("disable", "immediate", "skip"):
-            self.blacklist_mode = raw_mode
-        elif raw_mode == "none":
-            # 兼容早期版本的黑名单模式命名
-            self.blacklist_mode = "disable"
-        elif config.get("enable_id_black_list", False):
-            # 兼容早期 fork 版本配置：显式开启 enable_id_black_list 时等价于 immediate
-            self.blacklist_mode = "immediate"
-        else:
+        self.blacklist_mode = config.get("blacklist_mode", "disable")
+        if self.blacklist_mode not in ("disable", "immediate", "skip"):
             self.blacklist_mode = "disable"
 
     @staticmethod
