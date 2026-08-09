@@ -12,7 +12,6 @@ from ..base import BaseLiteParser, handle
 from ..cookie import CookieJar
 from ..data import Platform
 from ..exception import ParseException
-from curl_cffi import requests as curl_requests
 
 
 class XHSLiteParser(BaseLiteParser):
@@ -66,14 +65,8 @@ class XHSLiteParser(BaseLiteParser):
             return await self.parse_discovery(f"{xhs_domain}/discovery/item/{query}")
 
     async def parse_explore(self, url: str, xhs_id: str):
-        # 组装代理格式以适配 curl_cffi
-        proxies = {"http": self.proxy, "https": self.proxy} if self.proxy else None
-        
-        # 使用 curl_cffi 完美伪装成 Chrome 110 浏览器，绕过常规指纹识别
-        async with curl_requests.AsyncSession(impersonate="chrome110") as session:
-            response = await session.get(url, headers=self.headers, proxies=proxies)
-            html = response.text
-
+        async with self.session.get(url, headers=self.headers, proxy=self.proxy) as response:
+            html = await response.text()
         payload = self._extract_initial_state_json(html)
         note_data = payload.get("note", {}).get("noteDetailMap", {}).get(xhs_id, {}).get("note", {})
         if not note_data:
@@ -101,33 +94,21 @@ class XHSLiteParser(BaseLiteParser):
         )
 
     async def parse_discovery(self, url: str):
-        proxies = {"http": self.proxy, "https": self.proxy} if self.proxy else None
-        
-        # 使用 curl_cffi 伪装并允许重定向
-        async with curl_requests.AsyncSession(impersonate="chrome110") as session:
-            response = await session.get(
-                url, 
-                headers=self.ios_headers, 
-                proxies=proxies, 
-                allow_redirects=True
-            )
-            html = response.text
-
+        async with self.session.get(
+            url,
+            headers=self.ios_headers,
+            proxy=self.proxy,
+            allow_redirects=True,
+        ) as response:
+            html = await response.text()
         payload = self._extract_initial_state_json(html)
         note_data = payload.get("noteData")
         if not note_data:
             raise ParseException("xhs noteData missing")
         preload_data = note_data.get("normalNotePreloadData", {})
-        
-        # --- 核心修复：防止 NoneType 报错的容错机制 ---
-        inner_data = note_data.get("data")
-        if inner_data is None:
-            inner_data = {}
-        note_data = inner_data.get("noteData", {})
-        # -----------------------------------------------
-
+        note_data = note_data.get("data", {}).get("noteData", {})
         if not note_data:
-            raise ParseException("xhs noteData.data missing (可能由于视频笔记类型或触发了验证码拦截)")
+            raise ParseException("xhs noteData.data missing")
 
         user = note_data.get("user") or {}
         image_urls = [

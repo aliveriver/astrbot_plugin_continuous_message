@@ -4,6 +4,7 @@
 负责消息内容的解析、图片提取、事件重构和输入状态检测。
 """
 import json
+import os
 import re
 from urllib.parse import parse_qs, urlparse
 from typing import List, Tuple
@@ -206,6 +207,10 @@ class MessageParser:
             return "ncm"
         if host in {"www.zhihu.com", "zhihu.com", "zhuanlan.zhihu.com"}:
             return "zhihu"
+        if host in {"www.lofter.com", "lofter.com", "lofter.net"}:
+            return "lofter"
+        if host in {"y.qq.com", "i.y.qq.com", "c.y.qq.com"}:
+            return "qqmusic"
         return ""
 
     def _needs_card_canonicalization(self, url: str) -> bool:
@@ -313,6 +318,94 @@ class MessageParser:
         non_wrappers = [u for u in deduped if not self._is_wrapper_share_url(u)]
         return non_wrappers or deduped
 
+    @staticmethod
+    def _dedupe_keep_order(values: List[str]) -> List[str]:
+        deduped = []
+        seen = set()
+        for value in values:
+            if value and value not in seen:
+                seen.add(value)
+                deduped.append(value)
+        return deduped
+
+    @staticmethod
+    def _raw_get(raw, key, default=None):
+        try:
+            if isinstance(raw, dict):
+                return raw.get(key, default)
+            if hasattr(raw, "get"):
+                return raw.get(key, default)
+        except Exception:
+            pass
+        return getattr(raw, key, default)
+
+    def _extract_image_urls_from_raw_message(self, message_obj) -> List[str]:
+        """Prefer durable image refs from the platform payload over temp files."""
+        raw = getattr(message_obj, "raw_message", None)
+        raw_chain = self._raw_get(raw, "message", [])
+        if not isinstance(raw_chain, list):
+            return []
+
+        image_urls = []
+        for segment in raw_chain:
+            if not isinstance(segment, dict) or segment.get("type") != "image":
+                continue
+            data = segment.get("data") or {}
+            if not isinstance(data, dict):
+                continue
+            image_ref = data.get("url") or data.get("file")
+            if image_ref:
+                image_urls.append(str(image_ref))
+        return self._dedupe_keep_order(image_urls)
+
+    @staticmethod
+    def _build_raw_message_segments(text: str, image_urls: List[str]) -> List[dict]:
+        segments = []
+        if text:
+            segments.append({"type": "text", "data": {"text": text}})
+        for image_ref in image_urls or []:
+            if image_ref:
+                data = {"file": image_ref}
+                if str(image_ref).startswith(("http://", "https://")):
+                    data["url"] = image_ref
+                segments.append({"type": "image", "data": data})
+        return segments
+
+    @staticmethod
+    def _build_raw_message_text(text: str, image_urls: List[str]) -> str:
+        parts = [text] if text else []
+        for image_ref in image_urls or []:
+            if not image_ref:
+                continue
+            if str(image_ref).startswith(("http://", "https://")):
+                parts.append(f"[CQ:image,file={image_ref},url={image_ref}]")
+            else:
+                parts.append(f"[CQ:image,file={image_ref}]")
+        return "".join(parts)
+
+    def _sync_raw_message(
+        self,
+        event: AstrMessageEvent,
+        text: str,
+        image_urls: List[str],
+    ):
+        message_obj = getattr(event, "message_obj", None)
+        raw = getattr(message_obj, "raw_message", None)
+        if raw is None:
+            return
+
+        raw_segments = self._build_raw_message_segments(text, image_urls)
+        raw_text = self._build_raw_message_text(text, image_urls)
+        try:
+            raw["message"] = raw_segments
+            raw["raw_message"] = raw_text
+        except Exception:
+            try:
+                setattr(raw, "message", raw_segments)
+                setattr(raw, "raw_message", raw_text)
+            except Exception:
+                pass
+
     def is_command(self, message: str, prefixes: list) -> bool:
         """检查消息是否为指令"""
         message = message.strip()
@@ -337,6 +430,54 @@ class MessageParser:
             )
         except Exception:
             return False
+
+    def get_message_id(self, event: AstrMessageEvent):
+        """
+        获取消息的 message_id。
+        优先从 message_obj.message_id 获取，回退到 raw_message['message_id']。
+        返回字符串或整数，调用方可自行做 str() 统一比较。
+        """
+        try:
+            mid = getattr(event.message_obj, 'message_id', None)
+            if mid is not None:
+                return mid
+            raw = getattr(event.message_obj, 'raw_message', None)
+            if isinstance(raw, dict):
+                return raw.get('message_id')
+        except Exception:
+            pass
+        return None
+
+    def is_recall_event(self, event: AstrMessageEvent) -> bool:
+        """
+        检测是否为消息撤回通知事件（OneBot v11 friend_recall / group_recall）。
+        仅在 aiocqhttp 平台有效。
+        """
+        if not IS_AIOCQHTTP:
+            return False
+        try:
+            raw = getattr(event.message_obj, 'raw_message', None)
+            if not isinstance(raw, dict):
+                return False
+            return (
+                raw.get('post_type') == 'notice'
+                and raw.get('notice_type') in ('friend_recall', 'group_recall')
+            )
+        except Exception:
+            return False
+
+    def get_recalled_message_id(self, event: AstrMessageEvent):
+        """
+        从撤回通知事件中提取被撤回消息的 message_id。
+        OneBot v11 撤回事件的 message_id 字段即为被撤回消息的 ID。
+        """
+        try:
+            raw = getattr(event.message_obj, 'raw_message', None)
+            if isinstance(raw, dict):
+                return raw.get('message_id')
+        except Exception:
+            pass
+        return None
 
     def parse_message(self, message_obj) -> Tuple[str, bool, List[str]]:
         """
@@ -394,26 +535,67 @@ class MessageParser:
             logger.error(f"[消息防抖动] 消息解析异常: {exc}")
 
         if self.enable_qq_card_parsing and card_urls:
-            # 去重并添加标识，便于LLM在整合消息中识别原始来源链接
-            deduped_links = []
-            seen = set()
-            for u in card_urls:
-                if u not in seen:
-                    seen.add(u)
-                    deduped_links.append(u)
+            deduped_links = self._dedupe_keep_order(card_urls)
             card_text = "\n".join(
-                self._append_prompt_line(self.qq_card_prompt, u) for u in deduped_links
+                self._append_prompt_line(self.qq_card_prompt, url)
+                for url in deduped_links
             )
-            text = (f"{text}\n{card_text}" if text else card_text)
+            text = f"{text}\n{card_text}" if text else card_text
 
-        return text, has_image, image_urls
+        raw_image_urls = self._extract_image_urls_from_raw_message(message_obj)
+        if raw_image_urls:
+            image_urls = raw_image_urls
+            has_image = True
 
-    def reconstruct_event(self, event: AstrMessageEvent, text: str, image_urls: List[str]):
+        return text, has_image, self._dedupe_keep_order(image_urls)
+
+    def _build_image_component(self, image_ref: str, prefer_filesystem: bool = False):
+        if not self._ImageComponent or not image_ref:
+            return None
+
+        if (
+            prefer_filesystem
+            and os.path.isfile(image_ref)
+            and hasattr(self._ImageComponent, "fromFileSystem")
+        ):
+            try:
+                return self._ImageComponent.fromFileSystem(image_ref)
+            except Exception as exc:
+                logger.warning(f"[消息防抖动] Image.fromFileSystem 构造失败，回退普通 Image: {exc}")
+
+        if self._SCHEME_PATTERN.match(image_ref) and hasattr(self._ImageComponent, "fromURL"):
+            try:
+                return self._ImageComponent.fromURL(image_ref)
+            except Exception:
+                pass
+
+        try:
+            return self._ImageComponent(file=image_ref)
+        except TypeError:
+            return self._ImageComponent(url=image_ref)
+        except Exception:
+            return None
+
+    def reconstruct_event(
+        self,
+        event: AstrMessageEvent,
+        text: str,
+        image_urls: List[str],
+        prefer_filesystem_images: bool = False,
+    ):
         """
         重构消息事件，将合并后的文本和图片重新组装到事件对象中
         这样事件可以继续传播给后续的插件/框架处理
         """
         event.message_str = text
+        if hasattr(event, "message_obj"):
+            try:
+                event.message_obj.message_str = text
+            except Exception:
+                pass
+
+        self._sync_raw_message(event, text, image_urls)
+
         if not self._PlainComponent:
             return
 
@@ -424,13 +606,13 @@ class MessageParser:
         
         # 添加图片组件（兼容不同的 Image 构造函数参数）
         if image_urls and self._ImageComponent:
-            for url in image_urls:
-                try:
-                    chain.append(self._ImageComponent(file=url))
-                except TypeError:
-                    chain.append(self._ImageComponent(url=url))
-                except Exception:
-                    pass
+            for image_ref in image_urls:
+                image_component = self._build_image_component(
+                    image_ref,
+                    prefer_filesystem=prefer_filesystem_images,
+                )
+                if image_component:
+                    chain.append(image_component)
         
         # 更新事件的消息对象
         if hasattr(event.message_obj, "message"):

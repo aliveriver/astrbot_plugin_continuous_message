@@ -1,26 +1,24 @@
 import asyncio
+from pathlib import Path
 from typing import Dict
-from astrbot.api.star import Context, Star, register
+
+from astrbot.api.star import Context, Star
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api import AstrBotConfig, logger
 
 from .message_parser import MessageParser, IS_AIOCQHTTP
 from .forward_handler import ForwardHandler
+from .image_localizer import ImageLocalizer
 from .link_parser_adapter import LinkParserAdapter
+from .access_control import IDAccessControl, MODE_DENY, MODE_IMMEDIATE
 
 # 检查是否为 aiocqhttp 平台
 if IS_AIOCQHTTP:
     from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
 
-@register(
-    "continuous_message",
-    "aliveriver",
-    "将用户短时间内发送的多条私聊消息合并成一条发送给LLM（仅私聊模式，支持合并转发消息、引用消息、输入状态感知）",
-    "2.3.0"
-)
 class ContinuousMessagePlugin(Star):
     """
-    消息防抖动插件 v2.3.0
+    消息防抖动插件 v2.8.0
     消息防抖动插件（仅私聊模式）
     
     功能：
@@ -32,6 +30,7 @@ class ContinuousMessagePlugin(Star):
     6. 支持QQ合并转发消息的提取和合并（aiocqhttp平台）
     7. 支持QQ引用消息的智能识别和上下文标注（aiocqhttp平台）
     8. 支持输入状态感知，检测到用户正在打字时自动延长等待（NapCat等支持input_status的平台）
+    9. 支持 ID 黑/白名单，控制哪些用户的消息参与防抖合并
 
     安全设计：
     - 强制仅在私聊启用，避免群聊中不同用户的消息被误合并
@@ -39,24 +38,34 @@ class ContinuousMessagePlugin(Star):
     
     def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
-        self.config = config or {}
+        self.config = self._normalize_config(config or {})
         
         self.debounce_time = float(self.config.get('debounce_time', 2.0))
         self.command_prefixes = self.config.get('command_prefixes', ['/'])
         self.enable_plugin = self.config.get('enable', True)
         self.merge_separator = self.config.get('merge_separator', '\n')
         self.enable_forward_analysis = self.config.get('enable_forward_analysis', True)
-        self.forward_prefix = self.config.get('forward_prefix', '【合并转发内容】\n')
+        self.forward_prefix = self.config.get('forward_prefix', '')
         self.enable_typing_detection = self.config.get('enable_typing_detection', True)
         self.max_typing_wait = float(self.config.get('max_typing_wait', 60.0))
+        self.enable_recall_filter = self.config.get('enable_recall_filter', True)
+        self.enable_adaptive_debounce = bool(self.config.get('enable_adaptive_debounce', True))
+        self.adaptive_min_wait = float(self.config.get('adaptive_min_wait', 1.0))
+        self.adaptive_max_wait = float(self.config.get('adaptive_max_wait', 6.0))
+        self.adaptive_max_total_wait = float(self.config.get('adaptive_max_total_wait', 12.0))
+        self.adaptive_short_message_threshold = int(self.config.get('adaptive_short_message_threshold', 10))
+        self.access_control = IDAccessControl(self.config)
+        self.image_localizer = ImageLocalizer.from_config(
+            self.config,
+            Path(__file__).resolve().parent,
+        )
 
-        # 引用消息配置
-        reply_format = '[引用消息({sender_name}: {full_text})]'
-        bot_reply_hint = self.config.get('bot_reply_hint', '[系统提示：以上引用的消息是你(助手)之前发送的内容，不是用户说的话]')
-        
+        # 引用消息配置（sender 属性已标明发送者，LLM 可自行推断角色，无需额外 hint）
+        reply_format = '<quoted_message sender="{sender_name}">{full_text}</quoted_message>'
+
         # 会话存储
         self.sessions: Dict[str, Dict] = {}
-        
+
         # 初始化子模块
         image_comp = None
         plain_comp = None
@@ -77,17 +86,66 @@ class ContinuousMessagePlugin(Star):
             plain_component=plain_comp,
             plugin_config=self.config,
         )
-        self.forward_handler = ForwardHandler(reply_format=reply_format, bot_reply_hint=bot_reply_hint)
+        self.forward_handler = ForwardHandler(reply_format=reply_format)
         self.link_parser = LinkParserAdapter(self.config)
+        self.image_localizer.cleanup()
 
         logger.info(
-            f"[消息防抖动] v2.3.0 加载 | 事件驱动模式 | 防抖: {self.debounce_time}s "
+            f"[消息防抖动] v2.8.0 加载 | 事件驱动模式 | 防抖: {self.debounce_time}s "
             f"| 合并消息: {self.enable_forward_analysis} | 输入感知: {self.enable_typing_detection} "
+            f"| 自适应防抖: {self.enable_adaptive_debounce}({self.adaptive_min_wait}-{self.adaptive_max_wait}s, 总上限{self.adaptive_max_total_wait}s) "
+            f"| 撤回过滤: {self.enable_recall_filter} "
             f"| QQ卡片解析: {self.parser.enable_qq_card_parsing} | 链接解析: {self.link_parser.enabled}"
+            f"| 图片本地化: {self.image_localizer.enabled} | 访问控制: {self.access_control.describe()}"
         )
+
+    @staticmethod
+    def _normalize_config(config: dict) -> dict:
+        """Flatten v4.26 nested schema config while keeping old flat keys usable."""
+        flat = dict(config or {})
+        for group in ("basic", "debounce", "message_features", "qq_card", "link_parser", "image_handling", "access_control"):
+            value = config.get(group) if hasattr(config, "get") else None
+            if isinstance(value, dict):
+                flat.update(value)
+        return flat
 
     async def terminate(self):
         await self.link_parser.close()
+
+    async def _finalize_merged(self, event: AstrMessageEvent, buffer: list, images: list):
+        """对最终消息执行链接解析、图片本地化与事件重构。"""
+        original_image_count = len(images)
+        merged_text = self.merge_separator.join(buffer).strip()
+        try:
+            merged_text, all_images = await self.link_parser.enrich(merged_text, images)
+        except Exception as exc:
+            logger.error(f"[消息防抖动] 链接解析异常，回退原始消息: {exc}")
+            all_images = list(images)
+        parsed_added_image_count = max(len(all_images) - original_image_count, 0)
+        try:
+            all_images = await self.image_localizer.localize(all_images)
+        except Exception as exc:
+            logger.error(f"[消息防抖动] 图片本地化异常，回退原始图片: {exc}")
+
+        if not merged_text and not all_images:
+            self._silence_event(event)
+            return
+
+        img_info = f" + {len(all_images)}图" if all_images else ""
+        logger.info(f"[消息防抖动] 结算触发 - 共 {len(buffer)} 条{img_info} -> 发送")
+        logger.info(
+            f"[消息防抖动] 图片统计 | 原图数量: {original_image_count} | 解析追加图数量: {parsed_added_image_count}"
+        )
+        logger.debug(f"[消息防抖动] 合并后的完整消息:\n{merged_text}")
+        if all_images:
+            logger.debug(f"[消息防抖动] 图片列表: {all_images}")
+
+        self.parser.reconstruct_event(
+            event,
+            merged_text,
+            all_images,
+            prefer_filesystem_images=self.image_localizer.enabled,
+        )
 
     async def _timer_coroutine(self, uid: str, duration: float):
         """
@@ -103,7 +161,135 @@ class ContinuousMessagePlugin(Star):
         except asyncio.CancelledError:
             pass
 
-    @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE, priority=50)
+    @staticmethod
+    def _now() -> float:
+        return asyncio.get_running_loop().time()
+
+    @staticmethod
+    def _silence_event(event: AstrMessageEvent) -> None:
+        event.should_call_llm(True)
+        try:
+            event.clear_result()
+        except Exception:
+            pass
+        try:
+            event._force_stopped = True
+        except Exception:
+            event.stop_event()
+            try:
+                event.clear_result()
+            except Exception:
+                pass
+
+    @staticmethod
+    def _is_private_message_event(event: AstrMessageEvent) -> bool:
+        try:
+            return event.is_private_chat()
+        except Exception:
+            return False
+
+    def _is_short_message(self, text: str) -> bool:
+        return len((text or "").strip()) <= self.adaptive_short_message_threshold
+
+    def _update_short_message_count(self, session: dict, text: str) -> int:
+        if self._is_short_message(text):
+            session['short_message_count'] = session.get('short_message_count', 0) + 1
+        else:
+            session['short_message_count'] = 0
+        return session['short_message_count']
+
+    def _calculate_wait_duration(self, text: str, session: dict = None):
+        """根据消息形态计算下一轮等待时间；返回 (等待秒数, 是否立即结算, 原因)。"""
+        if not self.enable_adaptive_debounce:
+            return self.debounce_time, False, "fixed_debounce"
+
+        clean = (text or "").strip()
+        length = len(clean)
+        reasons = []
+
+        if length <= 3:
+            wait = 4.0
+            reasons.append("very_short")
+        elif length <= 10:
+            wait = 3.2
+            reasons.append("short")
+        elif length <= 30:
+            wait = 2.7
+            reasons.append("medium")
+        elif length <= 80:
+            wait = 1.8
+            reasons.append("long")
+        else:
+            wait = 1.0
+            reasons.append("very_long")
+
+        if clean.endswith(("...", "…", "，", "、", "：", ":")):
+            wait += 1.8
+            reasons.append("unfinished_punctuation")
+        elif clean.endswith(("？", "?")):
+            wait -= 0.8
+            reasons.append("question_end")
+        elif clean.endswith(("。", "！", "!")):
+            wait -= 0.5
+            reasons.append("sentence_end")
+        elif clean and clean[-1] not in "。！？!?，、：:；;,.…":
+            if length <= 10:
+                wait += 0.8
+            elif length <= 30:
+                wait += 0.7
+            elif length <= 80:
+                wait += 0.3
+            reasons.append("chat_plain_end")
+
+        if session:
+            short_count = self._update_short_message_count(session, clean)
+            if short_count >= 4:
+                wait += 0.8
+                reasons.append("short_streak_4plus")
+            elif short_count == 3:
+                wait += 0.6
+                reasons.append("short_streak_3")
+            elif short_count == 2:
+                wait += 0.3
+                reasons.append("short_streak_2")
+
+        wait = max(self.adaptive_min_wait, min(wait, self.adaptive_max_wait))
+
+        if session and session.get('started_at') is not None:
+            elapsed = self._now() - session['started_at']
+            remaining = self.adaptive_max_total_wait - elapsed
+            if remaining <= 0:
+                return 0.0, True, ",".join(reasons + ["max_total_wait_reached"])
+            if wait > remaining:
+                wait = max(0.0, remaining)
+                reasons.append("limited_by_total_wait")
+
+        return wait, False, ",".join(reasons) or "adaptive"
+
+    @staticmethod
+    def _format_wait_reason(reason: str) -> str:
+        labels = {
+            "fixed_debounce": "固定防抖",
+            "very_short": "极短消息",
+            "short": "短消息",
+            "medium": "中等长度",
+            "long": "较长消息",
+            "very_long": "长消息",
+            "unfinished_punctuation": "延续信号",
+            "question_end": "问号结尾",
+            "sentence_end": "主动结束标点",
+            "chat_plain_end": "口语无标点",
+            "short_streak_2": "连续短句x2",
+            "short_streak_3": "连续短句x3",
+            "short_streak_4plus": "连续短句x4+",
+            "limited_by_total_wait": "受总等待上限限制",
+            "max_total_wait_reached": "达到总等待上限",
+            "adaptive": "自适应防抖",
+        }
+        parts = [labels.get(item, item) for item in (reason or "adaptive").split(",") if item]
+        return "+".join(parts) if parts else labels["adaptive"]
+
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=50)
     async def handle_private_msg(self, event: AstrMessageEvent):
         if not self.enable_plugin or self.debounce_time <= 0:
             return
@@ -142,7 +328,47 @@ class ContinuousMessagePlugin(Star):
                         logger.info(f"[消息防抖动] 用户停止输入，恢复防抖 {self.debounce_time}s - 用户: {uid}")
                     else:
                         logger.debug(f"[消息防抖动] 忽略重复的停止输入通知 - 用户: {uid}")
-            event.stop_event()
+            self._silence_event(event)
+            return
+
+        # 0b. 撤回消息过滤：在防抖窗口内移除被撤回的消息
+        if self.enable_recall_filter and self.parser.is_recall_event(event):
+            recalled_mid = self.parser.get_recalled_message_id(event)
+            uid = event.unified_msg_origin
+            if recalled_mid is not None and uid in self.sessions:
+                session = self.sessions[uid]
+                before_count = len(session['items'])
+                # 移除匹配 message_id 的 item（str 比较兼容整数/字符串混用）
+                session['items'] = [
+                    item for item in session['items']
+                    if str(item['message_id']) != str(recalled_mid)
+                ]
+                after_count = len(session['items'])
+                if after_count < before_count:
+                    # 重建 buffer 和 images
+                    session['buffer'] = [item['text'] for item in session['items'] if item['text']]
+                    session['images'] = [url for item in session['items'] for url in item['images']]
+                    logger.info(
+                        f"[消息防抖动] 已过滤撤回消息 | message_id: {recalled_mid} "
+                        f"| 剩余 {after_count} 条 - 用户: {uid}"
+                    )
+                    # 若队列已空，立即触发结算（结算阶段会 _silence_event 静默终止空消息）
+                    if after_count == 0:
+                        logger.info(f"[消息防抖动] 所有消息均已撤回，终止本次结算 - 用户: {uid}")
+                        session['flush_event'].set()
+                else:
+                    logger.debug(
+                        f"[消息防抖动] 收到撤回通知但未找到对应消息 | message_id: {recalled_mid} - 用户: {uid}"
+                    )
+            self._silence_event(event)
+            return
+
+        if not self._is_private_message_event(event):
+            return
+
+        # 0. ID 黑/白名单检查：白名单未命中直接放行；黑名单命中走立即处理分支
+        access_mode = self.access_control.get_mode(event)
+        if access_mode == MODE_DENY:
             return
 
         # 0. 检测并处理合并转发消息（仅aiocqhttp平台）
@@ -170,11 +396,9 @@ class ContinuousMessagePlugin(Star):
         
         # 合并转发内容处理
         if forward_text:
-            if forward_text.startswith('[引用消息('):
-                raw_text = forward_text + ("\n" + raw_text if raw_text else "")
-            else:
-                prefix_text = self.forward_prefix + forward_text
-                raw_text = prefix_text + ("\n" + raw_text if raw_text else "")
+            # quoted_message 和 forward_content 都已由 ForwardHandler 包裹好 XML 标签，直接前置拼接
+            raw_text = forward_text + ("\n" + raw_text if raw_text else "")
+            logger.debug(f"[消息防抖动] 已合并元信息 | 元信息类型: {'引用消息' if forward_text.startswith('<quoted_message') else '合并转发'} | 元信息长度: {len(forward_text)}字")
         if forward_images:
             current_urls.extend(forward_images)
             has_image = True
@@ -193,43 +417,104 @@ class ContinuousMessagePlugin(Star):
         if not raw_text and not has_image:
             return
 
+        # 3.5 黑名单用户：不参与防抖合并，收到后立即处理，其余功能照常生效
+        if access_mode == MODE_IMMEDIATE:
+            logger.info(f"[消息防抖动] 黑名单用户立即发送（防抖 0s） - 用户: {uid}")
+            await self._finalize_merged(
+                event,
+                [raw_text] if raw_text else [],
+                list(current_urls),
+            )
+            return
+
         # ================== 核心防抖逻辑 ==================
 
         # 场景 A: 追加到现有会话 (Msg 2, 3...)
         if uid in self.sessions:
             session = self.sessions[uid]
-            
+
+            # 构建带 message_id 的 item 并追加
+            message_id = self.parser.get_message_id(event)
+            session['items'].append({
+                'message_id': message_id,
+                'text': raw_text,
+                'images': current_urls,
+            })
             if raw_text:
                 session['buffer'].append(raw_text)
             if current_urls:
                 session['images'].extend(current_urls)
-            
-            # 重置计时器
+
+            # 重置计时器：自适应防抖会根据新增消息形态决定下一轮等待时长。
             if session.get('timer_task'):
                 session['timer_task'].cancel()
-            
-            session['timer_task'] = asyncio.create_task(
-                self._timer_coroutine(uid, self.debounce_time)
+
+            next_wait, should_flush_now, wait_reason = self._calculate_wait_duration(raw_text, session)
+            session['last_wait'] = next_wait
+            display_reason = self._format_wait_reason(wait_reason)
+            if should_flush_now:
+                session['flush_event'].set()
+                logger.info(
+                    f"[消息防抖动] 自适应等待 | 立即结算 | 原因: {display_reason} - 用户: {uid}"
+                )
+            else:
+                session['timer_task'] = asyncio.create_task(
+                    self._timer_coroutine(uid, next_wait)
+                )
+                logger.info(
+                    f"[消息防抖动] 自适应等待 | 下一轮等待: {next_wait:.2f}s "
+                    f"| 原因: {display_reason} - 用户: {uid}"
+                )
+
+            logger.debug(
+                f"[消息防抖动] 追加消息 | message_id: {message_id} | buffer长度: {len(session['buffer'])} "
+                f"| 图片: {len(current_urls)}张 | 计时器已重置 {next_wait:.2f}s "
+                f"| reason: {wait_reason} - 用户: {uid}"
             )
-            
-            event.stop_event()
+            if raw_text:
+                logger.debug(f"[消息防抖动] 追加文本内容: {raw_text[:100]}{'...' if len(raw_text) > 100 else ''}")
+            self._silence_event(event)
             return
 
         # 场景 B: 启动新会话 (Msg 1)
         flush_event = asyncio.Event()
+        started_at = self._now()
+        initial_wait, _, wait_reason = self._calculate_wait_duration(raw_text)
+        display_reason = self._format_wait_reason(wait_reason)
         timer_task = asyncio.create_task(
-            self._timer_coroutine(uid, self.debounce_time)
+            self._timer_coroutine(uid, initial_wait)
         )
-        
+
+        # 获取首条消息的 message_id
+        message_id = self.parser.get_message_id(event)
+        first_item = {
+            'message_id': message_id,
+            'text': raw_text,
+            'images': current_urls,
+        }
+
         self.sessions[uid] = {
             'buffer': [raw_text] if raw_text else [],
-            'images': current_urls,
+            'images': list(current_urls),
+            'items': [first_item],
             'flush_event': flush_event,
             'timer_task': timer_task,
-            'is_typing': False
+            'is_typing': False,
+            'started_at': started_at,
+            'last_wait': initial_wait,
+            'short_message_count': 1 if self._is_short_message(raw_text) else 0
         }
-        
-        logger.info(f"[消息防抖动] 开始收集 - 用户: {uid}")
+
+        logger.info(
+            f"[消息防抖动] 开始收集 | 初始等待: {initial_wait:.2f}s "
+            f"| 原因: {display_reason} - 用户: {uid}"
+        )
+        logger.debug(
+            f"[消息防抖动] 新建会话 | message_id: {message_id} | 图片: {len(current_urls)}张 "
+            f"| 防抖时长: {initial_wait:.2f}s | reason: {wait_reason}"
+        )
+        if raw_text:
+            logger.debug(f"[消息防抖动] 首条消息文本: {raw_text[:100]}{'...' if len(raw_text) > 100 else ''}")
 
         await flush_event.wait()
         
@@ -237,25 +522,5 @@ class ContinuousMessagePlugin(Star):
         if uid not in self.sessions:
             return
         session_data = self.sessions.pop(uid)
-        
-        buffer = session_data['buffer']
-        all_images = session_data['images']
-        original_image_count = len(all_images)
-        merged_text = self.merge_separator.join(buffer).strip()
-        merged_text, all_images = await self.link_parser.enrich(merged_text, all_images)
-        parsed_added_image_count = max(len(all_images) - original_image_count, 0)
-        
-        if not merged_text and not all_images:
-            return
-
-        img_info = f" + {len(all_images)}图" if all_images else ""
-        logger.info(f"[消息防抖动] 结算触发 - 共 {len(buffer)} 条{img_info} -> 发送")
-        logger.info(
-            f"[消息防抖动] 图片统计 | 原图数量: {original_image_count} | 解析追加图数量: {parsed_added_image_count}"
-        )
-        logger.info(f"[消息防抖动] 合并后的完整消息:\n{merged_text}")
-        if all_images:
-            logger.debug(f"[消息防抖动] 图片列表: {all_images}")
-        
-        self.parser.reconstruct_event(event, merged_text, all_images)
+        await self._finalize_merged(event, session_data['buffer'], session_data['images'])
         return

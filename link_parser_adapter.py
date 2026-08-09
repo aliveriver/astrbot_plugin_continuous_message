@@ -13,6 +13,9 @@ class LinkParserAdapter:
         "ncm": "网易云音乐",
         "xhs": "小红书",
         "xiaoheihe": "小黑盒",
+        "lofter": "LOFTER",
+        "qqmusic": "QQ音乐",
+        "zhihu": "知乎",
     }
 
     def __init__(self, plugin_config: dict[str, Any]):
@@ -75,6 +78,9 @@ class LinkParserAdapter:
                         "ncm": {"enable": "ncm" not in self.disabled_platforms},
                         "xiaoheihe": {"enable": "xiaoheihe" not in self.disabled_platforms},
                         "xhs": {"enable": "xhs" not in self.disabled_platforms},
+                        "lofter": {"enable": "lofter" not in self.disabled_platforms},
+                        "qqmusic": {"enable": "qqmusic" not in self.disabled_platforms},
+                        "zhihu": {"enable": "zhihu" not in self.disabled_platforms},
                     },
                 }
             )
