@@ -1,6 +1,3 @@
-已为你修改并补充了 Cookie 配置说明。你可以直接将以下内容复制并替换你的 `README.md` 文件：
-
-```markdown
 # AstrBot 消息防抖动插件 v2.8.0
 
 ## 简介
@@ -57,12 +54,10 @@
 ### 直接安装
 
 1. 将插件文件放置到 AstrBot 的插件目录中：
-
 ```
-
 data/plugins/astrbot_plugin_continuous_message/
-
 ```
+
 
 2. 重启 AstrBot 或在管理面板中重载插件
 
@@ -158,10 +153,8 @@ data/plugins/astrbot_plugin_continuous_message/
 ### Cookie 文件保存路径
 
 Cookie 文件统一放置在插件根目录下的 **`data/cookies/`** 目录中（若文件夹不存在请手动新建）：
-
-```text
+```
 data/plugins/astrbot_plugin_continuous_message/data/cookies/
-
 ```
 
 对应各平台的 Cookie 文件名如下：
