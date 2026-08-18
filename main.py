@@ -18,7 +18,7 @@ if IS_AIOCQHTTP:
 
 class ContinuousMessagePlugin(Star):
     """
-    消息防抖动插件 v2.8.0
+    消息防抖动插件 v2.8.1
     消息防抖动插件（仅私聊模式）
     
     功能：
