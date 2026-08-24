@@ -18,7 +18,7 @@ if IS_AIOCQHTTP:
 
 class ContinuousMessagePlugin(Star):
     """
-    消息防抖动插件 v2.8.1
+    消息防抖动插件 v2.9.0
     消息防抖动插件（仅私聊模式）
     
     功能：
@@ -44,6 +44,16 @@ class ContinuousMessagePlugin(Star):
         self.command_prefixes = self.config.get('command_prefixes', ['/'])
         self.enable_plugin = self.config.get('enable', True)
         self.merge_separator = self.config.get('merge_separator', '\n')
+        self.private_image_caption_provider_id = str(
+            self.config.get('private_image_caption_provider_id', '') or ''
+        ).strip()
+        self.private_image_caption_prompt = str(
+            self.config.get(
+                'private_image_caption_prompt',
+                '请准确描述图片内容，并结合用户问题提取与问题相关的关键信息。',
+            )
+            or ''
+        ).strip()
         self.enable_forward_analysis = self.config.get('enable_forward_analysis', True)
         self.forward_prefix = self.config.get('forward_prefix', '')
         self.enable_typing_detection = self.config.get('enable_typing_detection', True)
@@ -60,7 +70,7 @@ class ContinuousMessagePlugin(Star):
             Path(__file__).resolve().parent,
         )
 
-        # 引用消息配置（sender 属性已标明发送者，LLM 可自行推断角色，无需额外 hint）
+        # 引用消息配置（sender 属性已标明发送者，LLM 可自行推断角色，无需额外提示）
         reply_format = '<quoted_message sender="{sender_name}">{full_text}</quoted_message>'
 
         # 会话存储
@@ -91,19 +101,20 @@ class ContinuousMessagePlugin(Star):
         self.image_localizer.cleanup()
 
         logger.info(
-            f"[消息防抖动] v2.8.0 加载 | 事件驱动模式 | 防抖: {self.debounce_time}s "
+            f"[消息防抖动] v2.9.0 加载 | 事件驱动模式 | 防抖: {self.debounce_time}s "
             f"| 合并消息: {self.enable_forward_analysis} | 输入感知: {self.enable_typing_detection} "
             f"| 自适应防抖: {self.enable_adaptive_debounce}({self.adaptive_min_wait}-{self.adaptive_max_wait}s, 总上限{self.adaptive_max_total_wait}s) "
             f"| 撤回过滤: {self.enable_recall_filter} "
             f"| QQ卡片解析: {self.parser.enable_qq_card_parsing} | 链接解析: {self.link_parser.enabled}"
             f"| 图片本地化: {self.image_localizer.enabled} | 访问控制: {self.access_control.describe()}"
+            f"| 私聊识图模型: {self.private_image_caption_provider_id or '跟随主模型'}"
         )
 
     @staticmethod
     def _normalize_config(config: dict) -> dict:
-        """Flatten v4.26 nested schema config while keeping old flat keys usable."""
+        """将 v4.26 嵌套 Schema 配置扁平化，同时保留旧版扁平字段兼容性。"""
         flat = dict(config or {})
-        for group in ("basic", "debounce", "message_features", "qq_card", "link_parser", "image_handling", "access_control"):
+        for group in ("basic", "debounce", "message_features", "qq_card", "link_parser", "image_handling", "image_vision", "access_control"):
             value = config.get(group) if hasattr(config, "get") else None
             if isinstance(value, dict):
                 flat.update(value)
@@ -111,6 +122,49 @@ class ContinuousMessagePlugin(Star):
 
     async def terminate(self):
         await self.link_parser.close()
+
+    async def _caption_private_images(
+        self,
+        image_urls: list,
+        user_text: str = "",
+    ) -> str:
+        """使用配置的私聊 VLM，且不替换主会话 Provider。"""
+        provider_id = self.private_image_caption_provider_id
+        if not provider_id or not image_urls:
+            return ""
+
+        provider = self.context.get_provider_by_id(provider_id)
+        if provider is None or not hasattr(provider, "text_chat"):
+            logger.error(
+                f"[消息防抖动] 私聊识图模型不存在或不是聊天模型: {provider_id}"
+            )
+            return ""
+
+        try:
+            prompt = self.private_image_caption_prompt
+            if user_text:
+                prompt = f"{prompt}\n\n用户消息:\n{user_text}"
+            response = await provider.text_chat(
+                prompt=prompt,
+                image_urls=list(image_urls),
+            )
+            caption = str(getattr(response, "completion_text", "") or "").strip()
+            if not caption:
+                logger.warning(
+                    f"[消息防抖动] 私聊识图模型返回空结果: {provider_id}"
+                )
+                return ""
+            logger.info(
+                f"[消息防抖动] 私聊图片已由专用模型识别 | 模型: {provider_id} "
+                f"| 图片: {len(image_urls)}张"
+            )
+            return caption
+        except Exception as exc:
+            logger.error(
+                f"[消息防抖动] 私聊专用识图模型调用失败，保留原始图片: "
+                f"{provider_id} | {exc}"
+            )
+            return ""
 
     async def _finalize_merged(self, event: AstrMessageEvent, buffer: list, images: list):
         """对最终消息执行链接解析、图片本地化与事件重构。"""
@@ -126,6 +180,18 @@ class ContinuousMessagePlugin(Star):
             all_images = await self.image_localizer.localize(all_images)
         except Exception as exc:
             logger.error(f"[消息防抖动] 图片本地化异常，回退原始图片: {exc}")
+
+        # AstrBot 核心在主会话 Provider 支持图片时会跳过默认图片描述 Provider。
+        # 先调用插件选定的 VLM，使主会话模型保持不变并接收稳定的文本描述。
+        image_caption = await self._caption_private_images(all_images, merged_text)
+        if image_caption:
+            caption_block = f"<image_caption>\n{image_caption}\n</image_caption>"
+            merged_text = (
+                f"{merged_text}{self.merge_separator}{caption_block}"
+                if merged_text
+                else caption_block
+            )
+            all_images = []
 
         if not merged_text and not all_images:
             self._silence_event(event)
@@ -338,14 +404,14 @@ class ContinuousMessagePlugin(Star):
             if recalled_mid is not None and uid in self.sessions:
                 session = self.sessions[uid]
                 before_count = len(session['items'])
-                # 移除匹配 message_id 的 item（str 比较兼容整数/字符串混用）
+                # 移除匹配 message_id 的消息项（str 比较兼容整数/字符串混用）
                 session['items'] = [
                     item for item in session['items']
                     if str(item['message_id']) != str(recalled_mid)
                 ]
                 after_count = len(session['items'])
                 if after_count < before_count:
-                    # 重建 buffer 和 images
+                    # 重建 buffer 和图片列表
                     session['buffer'] = [item['text'] for item in session['items'] if item['text']]
                     session['images'] = [url for item in session['items'] for url in item['images']]
                     logger.info(
@@ -429,11 +495,11 @@ class ContinuousMessagePlugin(Star):
 
         # ================== 核心防抖逻辑 ==================
 
-        # 场景 A: 追加到现有会话 (Msg 2, 3...)
+        # 场景 A：追加到现有会话（第 2、3 条消息……）
         if uid in self.sessions:
             session = self.sessions[uid]
 
-            # 构建带 message_id 的 item 并追加
+            # 构建带 message_id 的消息项并追加
             message_id = self.parser.get_message_id(event)
             session['items'].append({
                 'message_id': message_id,
@@ -476,7 +542,7 @@ class ContinuousMessagePlugin(Star):
             self._silence_event(event)
             return
 
-        # 场景 B: 启动新会话 (Msg 1)
+        # 场景 B：启动新会话（第 1 条消息）
         flush_event = asyncio.Event()
         started_at = self._now()
         initial_wait, _, wait_reason = self._calculate_wait_duration(raw_text)
