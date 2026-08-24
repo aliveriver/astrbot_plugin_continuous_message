@@ -64,6 +64,27 @@
       }
     }
   },
+  "image_vision": {
+    "description": "私聊专用识图",
+    "type": "object",
+    "hint": "为私聊图片单独指定识图模型。识别结果会作为文本交给主会话模型，主会话模型不会被替换。留空则沿用 AstrBot 默认的图片处理逻辑。",
+    "obvious_hint": true,
+    "items": {
+      "private_image_caption_provider_id": {
+        "description": "私聊识图模型 Provider ID",
+        "type": "string",
+        "default": "",
+        "hint": "填写 AstrBot 模型配置中的 Provider ID，例如 siliconflow/Qwen/Qwen3-VL-32B-Instruct。仅处理私聊图片；留空关闭此功能。",
+        "obvious_hint": true
+      },
+      "private_image_caption_prompt": {
+        "description": "私聊识图提示词",
+        "type": "string",
+        "default": "请准确描述图片内容，并结合用户问题提取与问题相关的关键信息。",
+        "hint": "发送给专用识图模型的提示词。"
+      }
+    }
+  },
   "debounce": {
     "description": "防抖策略",
     "type": "object",
