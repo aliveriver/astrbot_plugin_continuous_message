@@ -18,7 +18,7 @@ if IS_AIOCQHTTP:
 
 class ContinuousMessagePlugin(Star):
     """
-    消息防抖动插件 v2.9.0
+    消息防抖动插件 v2.9.1
     消息防抖动插件（仅私聊模式）
     
     功能：
@@ -101,7 +101,7 @@ class ContinuousMessagePlugin(Star):
         self.image_localizer.cleanup()
 
         logger.info(
-            f"[消息防抖动] v2.9.0 加载 | 事件驱动模式 | 防抖: {self.debounce_time}s "
+            f"[消息防抖动] v2.9.1 加载 | 事件驱动模式 | 防抖: {self.debounce_time}s "
             f"| 合并消息: {self.enable_forward_analysis} | 输入感知: {self.enable_typing_detection} "
             f"| 自适应防抖: {self.enable_adaptive_debounce}({self.adaptive_min_wait}-{self.adaptive_max_wait}s, 总上限{self.adaptive_max_total_wait}s) "
             f"| 撤回过滤: {self.enable_recall_filter} "
@@ -204,7 +204,11 @@ class ContinuousMessagePlugin(Star):
         )
         logger.debug(f"[消息防抖动] 合并后的完整消息:\n{merged_text}")
         if all_images:
-            logger.debug(f"[消息防抖动] 图片列表: {all_images}")
+            display = [
+                u if len(u) <= 80 else f"{u[:60]}...(len={len(u)})"
+                for u in all_images
+            ]
+            logger.debug(f"[消息防抖动] 图片列表: {display}")
 
         self.parser.reconstruct_event(
             event,
@@ -482,6 +486,12 @@ class ContinuousMessagePlugin(Star):
         # 3. 忽略空消息
         if not raw_text and not has_image:
             return
+
+        # 3.4 固化本地图片：本事件结束（stop_event 触发框架清理）前把 temp 下的
+        # 图片文件读成 base64://，否则结算时文件已被框架删除（黑名单立即发送
+        # 分支也使用 current_urls，因此必须在此之前固化）
+        if current_urls:
+            current_urls = await self.parser.preserve_images(current_urls)
 
         # 3.5 黑名单用户：不参与防抖合并，收到后立即处理，其余功能照常生效
         if access_mode == MODE_IMMEDIATE:

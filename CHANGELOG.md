@@ -1,5 +1,22 @@
 ﻿# 更新日志
 
+## v2.9.1
+
+### 问题修复
+- 🐛 **修复 weixin_oc 等无持久图片 URL 平台，防抖窗口内第 2 条及之后消息的图片丢失**
+  - 现象：私聊先发一张图再补发文字/图片时，后续消息中的图片无法被 LLM 识别，控制台报 `provider.entities:216: 图片预处理结果为空，将忽略。`
+  - 原因：AstrBot v4 会把 temp 目录下的入站媒体登记为事件级临时文件，在该事件 pipeline 结束时删除；防抖窗口内第 2+ 条消息的事件先于结算结束，其图片文件被框架清理，结算重构的 Image 组件指向已删除文件。#17/#21 的修复（优先 raw_message 持久 URL）仅覆盖图片自带 http URL 的 aiocqhttp 类平台，微信 CDN 图片无持久引用可提取
+  - 方案：消息进入防抖队列前调用 `MessageParser.preserve_images()`，把本地临时图片立即读取并固化为 `base64://` 引用；读不到的图片直接丢弃并记录警告
+  - 资源限制：固化前检查单张图片大小与单条消息图片总量（`preserve_image_max_bytes` 默认 20MB、`preserve_images_total_max_bytes` 默认 50MB，≤0 不限制），超限记录警告并跳过，防止大图/多图造成较高内存占用
+  - 远程图片（http/https）、data URI、base64 引用不受影响，原样保留
+
+### 技术改进
+- 新增 `MessageParser.preserve_images()` / `_is_local_media_ref()` 方法（文件读取在独立线程执行）
+- 新增配置项 `preserve_image_max_bytes`、`preserve_images_total_max_bytes`
+- 结算阶段 debug 日志对 base64 引用截断展示
+
+---
+
 ## v2.9.0
 
 ### 新增

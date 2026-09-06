@@ -242,6 +242,18 @@
         "type": "bool",
         "default": true,
         "hint": "将本地化后的 GIF 转换为第一帧 JPG 后再传给 VLM，降低不同模型或提供方对动图支持不一致造成的问题。"
+      },
+      "preserve_image_max_bytes": {
+        "description": "本地图片固化单张上限（字节）",
+        "type": "int",
+        "default": 20971520,
+        "hint": "防抖固化为 base64 时允许的单张本地图片最大体积，超过会记录警告并跳过该图。默认 20MB，与图片本地化单张上限一致；设为 0 或负数表示不限制。"
+      },
+      "preserve_images_total_max_bytes": {
+        "description": "本地图片固化单条消息总量上限（字节）",
+        "type": "int",
+        "default": 52428800,
+        "hint": "单条消息内所有本地图片固化后的总大小上限，超过后剩余图片会记录警告并跳过，防止多张大图造成较高内存占用。默认 50MB；设为 0 或负数表示不限制。"
       }
     }
   },

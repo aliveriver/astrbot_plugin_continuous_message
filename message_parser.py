@@ -3,10 +3,14 @@
 
 负责消息内容的解析、图片提取、事件重构和输入状态检测。
 """
+import asyncio
+import base64
 import json
 import os
 import re
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+from urllib.request import url2pathname
 from typing import List, Tuple
 
 from astrbot.api import logger
@@ -44,6 +48,12 @@ class MessageParser:
         self.qq_card_prompt = str(config.get("qq_card_prompt", "[卡片链接]")).strip()
         self.qq_card_disabled_platforms = self._normalize_platform_set(
             config.get("qq_card_disabled_platforms", [])
+        )
+        self.preserve_image_max_bytes = int(
+            config.get("preserve_image_max_bytes", 20 * 1024 * 1024)
+        )
+        self.preserve_images_total_max_bytes = int(
+            config.get("preserve_images_total_max_bytes", 50 * 1024 * 1024)
         )
 
     @staticmethod
@@ -474,6 +484,62 @@ class MessageParser:
         except Exception:
             pass
         return None
+
+    @staticmethod
+    def _is_local_media_ref(url: str) -> bool:
+        if not url:
+            return False
+        return not url.lower().startswith(("http://", "https://", "data:", "base64://"))
+
+    async def preserve_images(self, image_urls: List[str]) -> List[str]:
+        """
+        把指向本地临时文件的图片引用立即固化为 base64://，防止防抖期间被清理。
+
+        AstrBot v4 会把 temp 目录下的入站媒体登记为事件级临时文件，在该事件
+        的 pipeline 结束时删除。防抖窗口内第 2 条及之后消息的事件会先于结算
+        结束，其图片文件随后即被清理，结算时重构的 Image 组件就会指向已删除
+        的文件（LLM 侧报"图片预处理结果为空，将忽略"并丢图）。因此必须在
+        消息进入 session 前就读取文件内容；读不到或超过大小限制的引用直接
+        丢弃，避免把无效路径交给 LLM 或造成过高的内存占用。远程/数据引用
+        不受事件清理影响，原样保留。
+        """
+        preserved: List[str] = []
+        accepted_bytes = 0
+        for url in image_urls:
+            if not self._is_local_media_ref(url):
+                preserved.append(url)
+                continue
+            try:
+                path = url2pathname(urlparse(url).path) if url.lower().startswith("file://") else url
+                size = Path(path).stat().st_size
+                if (
+                    self.preserve_image_max_bytes > 0
+                    and size > self.preserve_image_max_bytes
+                ):
+                    logger.warning(
+                        f"[消息防抖动] 图片超过单张大小上限 "
+                        f"{self.preserve_image_max_bytes} 字节（实际 {size}），"
+                        f"本次跳过该图: {path}"
+                    )
+                    continue
+                if (
+                    self.preserve_images_total_max_bytes > 0
+                    and accepted_bytes + size > self.preserve_images_total_max_bytes
+                ):
+                    logger.warning(
+                        f"[消息防抖动] 本条消息图片总大小超过上限 "
+                        f"{self.preserve_images_total_max_bytes} 字节，"
+                        f"本次跳过剩余图片（当前图 {size} 字节）"
+                    )
+                    continue
+                data = await asyncio.to_thread(Path(path).read_bytes)
+                preserved.append("base64://" + base64.b64encode(data).decode("ascii"))
+                accepted_bytes += size
+            except Exception as exc:
+                logger.warning(
+                    f"[消息防抖动] 图片固化失败，本次丢弃该图: {url[:80]} ({exc})"
+                )
+        return preserved
 
     def parse_message(self, message_obj) -> Tuple[str, bool, List[str]]:
         """
