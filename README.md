@@ -1,8 +1,15 @@
-# AstrBot 消息防抖动插件 v2.9.0
+# AstrBot 消息防抖动插件 v2.9.1
 
 ## 简介
 
 消息防抖动插件可以将用户短时间内发送的多条私聊消息合并成一条发送给大语言模型（LLM），避免频繁触发AI回复，提升用户体验。
+
+**v2.9.1 更新**：
+
+* 修复 weixin_oc 等无持久图片 URL 平台，防抖窗口内第 2 条及之后消息的图片丢失
+* 新增 `MessageParser.preserve_images()` / `_is_local_media_ref()` 方法（文件读取在独立线程执行）
+* 新增配置项 `preserve_image_max_bytes`、`preserve_images_total_max_bytes`
+* 感谢 cang-dot PR
 
 **v2.9.0 更新**：
 
@@ -15,12 +22,6 @@
 **v2.8.0 更新**：
 
 * 新增 ID 黑/白名单配置组 `access_control`：白名单限定参与合并的用户；黑名单支持不合并立即处理（`immediate`）或完全跳过（`skip`）两种模式。
-
-**v2.7.0 更新**：
-
-* v2.6 当前主要以图片 URL/重构 Image 组件的方式把图片重新交回 AstrBot。插件侧能正确收集图片，但不同 VLM/provider 对这条图片转述链路的兼容性不同。
-* 某些 provider 下，AstrBot 虽然进入图片 caption 流程并生成了临时压缩文件，但模型最终仍返回“[转述组件没有收到图片]”，说明图片没有作为有效视觉输入进入 VLM。
-* 推荐用户换稳定 caption provider；插件提供了从 URL 透传改成“本地化 + Image.fromFileSystem”的可选功能
 
 
 ## 功能特性
@@ -138,6 +139,10 @@
 | `image_localization_max_bytes` | int | `20971520` | 单张图片允许下载的最大字节数，默认 20 MiB。 |
 | `image_localization_cleanup_max_age_hours` | float | `24.0` | 插件启动和每次图片本地化前，清理超过该小时数的缓存文件。设为 `0` 或负数可关闭清理。 |
 | `image_localization_convert_gif_to_jpg` | bool | `true` | 将本地化后的 GIF 转换为第一帧 JPG 后再传给 VLM，降低不同模型或提供方对动图支持不一致造成的问题。 |
+| `preserve_image_max_bytes` | int | `20971520` | 防抖期间固化本地临时图片时的单图大小上限，默认 20 MiB。超过限制的图片会记录 warning 并跳过；设为 `0` 或负数表示不限制。 |
+| `preserve_images_total_max_bytes` | int | `52428800` | 单条消息固化本地临时图片的总大小上限，默认 50 MiB。超过限制后，后续超限图片会记录 warning 并跳过；设为 `0` 或负数表示不限制。 |
+
+图片固化与图片本地化是两条独立流程：`image_localization_*` 选项控制 HTTP/HTTPS 图片的下载缓存；`preserve_*` 选项用于处理适配器提供的本地临时图片。对于 `weixin_oc` 等没有持久图片 URL 的平台，插件会在事件临时文件被清理前读取图片，并以 `base64://` 引用保存到防抖会话中，因此不会在插件缓存目录额外生成文件，也不需要单独清理这类 Base64 数据。限制过大或超出总量的图片会被跳过，但同一消息中的文本仍会继续处理。
 
 ### 链接解析增强（link_parser）
 
@@ -413,6 +418,7 @@
 - 图片能否被真正理解取决于当前 AstrBot 使用的 LLM 是否支持视觉能力。非 VLM 模型可能会在核心层移除图片后仅保留文本重试。
 - 如果遇到部分 VLM/provider 无法正确处理远程图片 URL，可开启 `image_handling.enable_image_localization`，让插件先把图片落地到本地缓存，再通过 `Image.fromFileSystem` 交回 AstrBot。
 - 本地化图片会保存在 `image_handling.image_localization_dir` 中，并按 `image_localization_cleanup_max_age_hours` 自动清理过期缓存。
+- 对于 `weixin_oc` 等只提供本地临时文件的适配器，插件会在消息进入防抖队列前将图片固化为 `base64://`，避免后续事件清理导致图片丢失；可通过 `preserve_image_max_bytes` 和 `preserve_images_total_max_bytes` 控制内存占用。
 - 动态 GIF 在不同 VLM/provider 中兼容性不稳定；默认会在本地化后抽取第一帧转为 JPG，可通过 `image_localization_convert_gif_to_jpg` 关闭。
 - 链接解析会增加网络请求和等待时间。解析慢、失败率高或某个平台不需要解析时，可以调低 `link_parser_max_links`、缩短 `link_parser_timeout`，或把平台加入禁用列表。
 - 如果解析目标站点需要代理，在 `link_parser.link_parser_proxy` 中填写 HTTP/HTTPS 代理地址。
