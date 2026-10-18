@@ -18,7 +18,7 @@ if IS_AIOCQHTTP:
 
 class ContinuousMessagePlugin(Star):
     """
-    消息防抖动插件 v2.9.1
+    消息防抖动插件 v2.9.2
     消息防抖动插件（仅私聊模式）
     
     功能：
@@ -110,7 +110,7 @@ class ContinuousMessagePlugin(Star):
         self.image_localizer.cleanup()
 
         logger.info(
-            f"[消息防抖动] v2.9.1 加载 | 事件驱动模式 | 防抖: {self.debounce_time}s "
+            f"[消息防抖动] v2.9.2 加载 | 事件驱动模式 | 防抖: {self.debounce_time}s "
             f"| 合并消息: {self.enable_forward_analysis} | 输入感知: {self.enable_typing_detection} "
             f"| 自适应防抖: {self.enable_adaptive_debounce}({self.adaptive_min_wait}-{self.adaptive_max_wait}s, 总上限{self.adaptive_max_total_wait}s) "
             f"| 撤回过滤: {self.enable_recall_filter} "
