@@ -79,17 +79,26 @@ class ContinuousMessagePlugin(Star):
         # 初始化子模块
         image_comp = None
         plain_comp = None
+        self._file_comp = None
         try:
-            from astrbot.api.message_components import Image, Plain
+            from astrbot.api.message_components import Image, Plain, File
             image_comp = Image
             plain_comp = Plain
+            self._file_comp = File
         except ImportError:
             try:
                 from astrbot.api.message import Image, Plain
+                from astrbot.core.message.components import File
                 image_comp = Image
                 plain_comp = Plain
+                self._file_comp = File
             except ImportError:
-                logger.error("[消息防抖动] 严重: 组件导入失败")
+                try:
+                    from astrbot.api.message import Image, Plain
+                    image_comp = Image
+                    plain_comp = Plain
+                except ImportError:
+                    logger.error("[消息防抖动] 严重: 组件导入失败")
 
         self.parser = MessageParser(
             image_component=image_comp,
@@ -436,6 +445,25 @@ class ContinuousMessagePlugin(Star):
         if not self._is_private_message_event(event):
             return
 
+        # 检测是否含有 File 组件，若是则直接放行，跳过防抖以保证文件解析插件正常工作
+        if self._file_comp:
+            msg_chain = getattr(event.message_obj, "message", []) or []
+            if any(isinstance(item, self._file_comp) for item in msg_chain):
+                uid = event.unified_msg_origin
+                session = self.sessions.get(uid)
+                if session:
+                    # 先结算已有缓存，等其先放行下游，保证“指令在前、文件在后”的顺序
+                    logger.info(f"[消息防抖动] 检测到文件组件，先结算已有防抖缓存 - 用户: {uid}")
+                    if session.get('timer_task'):
+                        session['timer_task'].cancel()
+                    session['flush_event'].set()
+                    try:
+                        await asyncio.wait_for(session['done_event'].wait(), timeout=30)
+                    except asyncio.TimeoutError:
+                        logger.warning(f"[消息防抖动] 等待缓存结算超时，直接放行文件 - 用户: {uid}")
+                logger.info("[消息防抖动] 检测到文件组件，跳过防抖直接放行")
+                return
+
         # 0. ID 黑/白名单检查：白名单未命中直接放行；黑名单命中走立即处理分支
         access_mode = self.access_control.get_mode(event)
         if access_mode == MODE_DENY:
@@ -574,6 +602,7 @@ class ContinuousMessagePlugin(Star):
             'images': list(current_urls),
             'items': [first_item],
             'flush_event': flush_event,
+            'done_event': asyncio.Event(),
             'timer_task': timer_task,
             'is_typing': False,
             'started_at': started_at,
@@ -598,5 +627,8 @@ class ContinuousMessagePlugin(Star):
         if uid not in self.sessions:
             return
         session_data = self.sessions.pop(uid)
-        await self._finalize_merged(event, session_data['buffer'], session_data['images'])
+        try:
+            await self._finalize_merged(event, session_data['buffer'], session_data['images'])
+        finally:
+            session_data['done_event'].set()
         return
